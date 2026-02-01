@@ -1,5 +1,7 @@
 // API Service for Backend Communication
-const API_BASE_URL = 'http://localhost:5000/api';
+const API_BASE_URL = import.meta.env.PROD 
+  ? 'https://sri-chendur-traders-backend-13351890542.us-central1.run.app/api'
+  : 'http://localhost:5000/api';
 
 // Token Management
 export const setAuthToken = (token: string) => {

@@ -27,10 +27,13 @@ const __dirname = dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Get client URL and trim any whitespace
+const clientUrl = (process.env.CLIENT_URL || 'http://localhost:3000').trim();
+
 // Middleware
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:3000',
-  credentials: true
+  origin: clientUrl === '*' ? '*' : clientUrl,
+  credentials: clientUrl !== '*'
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
