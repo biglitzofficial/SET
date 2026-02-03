@@ -1,19 +1,22 @@
 
 import React, { useState, useMemo } from 'react';
-import { Customer, Invoice, Payment } from '../types';
+import { Customer, Invoice, Payment, AuditLog, StaffUser } from '../types';
 import { customerAPI } from '../services/api';
+import { createAuditLog, generateChangeSummary } from '../utils/auditLogger';
 
 interface CustomerListProps {
   customers: Customer[];
   setCustomers: React.Dispatch<React.SetStateAction<Customer[]>>;
   invoices: Invoice[];
   payments: Payment[];
+  setAuditLogs?: React.Dispatch<React.SetStateAction<AuditLog[]>>;
+  currentUser?: StaffUser | null;
 }
 
 type SortKey = 'name' | 'royaltyAmount' | 'interestPrincipal' | 'outstanding' | 'interestRate' | 'interestYield' | 'creditPrincipal';
 type ViewType = 'ALL' | 'ROYALTY' | 'INTEREST' | 'CHIT' | 'GENERAL' | 'CREDITOR';
 
-const CustomerList: React.FC<CustomerListProps> = ({ customers, setCustomers, invoices, payments }) => {
+const CustomerList: React.FC<CustomerListProps> = ({ customers, setCustomers, invoices, payments, setAuditLogs, currentUser }) => {
   const [showForm, setShowForm] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
   
@@ -132,11 +135,25 @@ const CustomerList: React.FC<CustomerListProps> = ({ customers, setCustomers, in
     setShowForm(true);
   };
 
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      // Blur the input to save the value
+      (e.target as HTMLInputElement).blur();
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
     // Ensure flags match the classification
     const cleanData = { ...formData };
+    
+    // Preserve the ID when editing
+    if (editingCustomer && editingCustomer.id) {
+      cleanData.id = editingCustomer.id;
+    }
+    
     if (formClass === 'CREDITOR') {
       cleanData.isLender = true;
       cleanData.isInterest = false; 
@@ -152,23 +169,120 @@ const CustomerList: React.FC<CustomerListProps> = ({ customers, setCustomers, in
       return;
     }
 
+    // Validation: Check for duplicate phone number or user ID
+    if (!editingCustomer) {
+      // Check if phone number already exists
+      const phoneExists = customers.find(c => 
+        c.phone === cleanData.phone && c.phone.trim() !== ''
+      );
+      
+      if (phoneExists) {
+        alert("User or number already exists. This mobile number is already registered.");
+        return;
+      }
+      
+      // Check if user ID (customer ID) already exists
+      const userIdExists = customers.find(c => c.id === cleanData.id);
+      
+      if (userIdExists) {
+        alert("User or number already exists. This user ID is already registered.");
+        return;
+      }
+    } else {
+      // When editing, check for duplicates excluding the current customer
+      const phoneExists = customers.find(c => 
+        c.id !== editingCustomer.id && 
+        c.phone === cleanData.phone && 
+        c.phone.trim() !== ''
+      );
+      
+      if (phoneExists) {
+        alert("User or number already exists. This mobile number is already registered to another user.");
+        return;
+      }
+    }
+
     try {
       if (editingCustomer) {
-        // Update existing customer
-        const updated = await customerAPI.update(editingCustomer.id, cleanData);
-        setCustomers(prev => prev.map(c => c.id === editingCustomer.id ? updated : c));
+        // Try to update existing customer
+        try {
+          const updated = await customerAPI.update(editingCustomer.id, cleanData);
+          setCustomers(prev => prev.map(c => c.id === editingCustomer.id ? updated : c));
+          
+          // Add audit log
+          if (setAuditLogs) {
+            const changes = generateChangeSummary(editingCustomer, updated);
+            const log = createAuditLog({
+              action: 'EDIT',
+              entityType: 'CUSTOMER',
+              entityId: updated.id,
+              description: `Updated customer: ${updated.name}`,
+              currentUser,
+              oldData: editingCustomer,
+              newData: updated,
+              changes
+            });
+            setAuditLogs(prev => [...prev, log]);
+          }
+          
+          alert('Customer updated successfully!');
+        } catch (updateError: any) {
+          // If customer doesn't exist in backend (404), create it instead
+          if (updateError?.message?.includes('404') || updateError?.message?.includes('not found')) {
+            console.warn(`Customer ${editingCustomer.id} not found in backend, creating new record...`);
+            // Remove the old ID and let backend generate a new one
+            const { id, createdAt, createdBy, updatedAt, updatedBy, ...dataWithoutId } = cleanData;
+            const newCustomer = await customerAPI.create(dataWithoutId);
+            // Replace the old customer with the new one in the list
+            setCustomers(prev => prev.map(c => c.id === editingCustomer.id ? newCustomer : c));
+            
+            // Add audit log
+            if (setAuditLogs) {
+              const log = createAuditLog({
+                action: 'CREATE',
+                entityType: 'CUSTOMER',
+                entityId: newCustomer.id,
+                description: `Synchronized customer to backend: ${newCustomer.name}`,
+                currentUser,
+                newData: newCustomer,
+                changes: 'Customer synced from local to backend database'
+              });
+              setAuditLogs(prev => [...prev, log]);
+            }
+            
+            alert('Customer synchronized with backend successfully!');
+          } else {
+            throw updateError;
+          }
+        }
       } else {
         // Create new customer
         const newCustomer = await customerAPI.create(cleanData);
         setCustomers([...customers, newCustomer]);
+        
+        // Add audit log
+        if (setAuditLogs) {
+          const log = createAuditLog({
+            action: 'CREATE',
+            entityType: 'CUSTOMER',
+            entityId: newCustomer.id,
+            description: `Created customer: ${newCustomer.name}`,
+            currentUser,
+            newData: newCustomer
+          });
+          setAuditLogs(prev => [...prev, log]);
+        }
+        
+        alert('Customer created successfully!');
       }
       
       setShowForm(false);
       setFormData(initialForm);
       setEditingCustomer(null);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to save customer:', error);
-      alert('Failed to save customer. Please try again.');
+      const errorMessage = error?.message || 'Failed to save customer. Please try again.';
+      alert(`Error: ${errorMessage}\n\nCustomer ID: ${editingCustomer?.id || 'N/A'}\nPlease check the console for more details.`);
     }
   };
 
@@ -483,7 +597,7 @@ const CustomerList: React.FC<CustomerListProps> = ({ customers, setCustomers, in
                    {formData.isGeneral && (
                      <div className="bg-blue-50 p-4 rounded-xl border border-blue-100">
                        <label className="block text-[10px] font-black text-blue-600 uppercase tracking-widest mb-2">Opening Receivable (Trade Due)</label>
-                       <input type="number" className="w-full bg-white rounded-lg p-2 font-black text-blue-900 outline-none" placeholder="0" value={formData.openingBalance || ''} onChange={e => setFormData({...formData, openingBalance: Number(e.target.value)})} />
+                       <input type="number" className="w-full bg-white rounded-lg p-2 font-black text-blue-900 outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" placeholder="Enter amount" value={formData.openingBalance && formData.openingBalance !== 0 ? formData.openingBalance : ''} onChange={e => setFormData({...formData, openingBalance: Number(e.target.value) || 0})} onKeyDown={handleKeyDown} />
                        <p className="text-[9px] font-bold text-blue-400 mt-1">Starting balance for non-interest trade.</p>
                      </div>
                    )}
@@ -491,7 +605,7 @@ const CustomerList: React.FC<CustomerListProps> = ({ customers, setCustomers, in
                    {formData.isRoyalty && (
                      <div className="bg-purple-50 p-4 rounded-xl border border-purple-100">
                        <label className="block text-[10px] font-black text-purple-400 uppercase tracking-widest mb-2">Royalty Amount (₹)</label>
-                       <input type="number" className="w-full bg-white rounded-lg p-2 font-black text-purple-900 outline-none" value={formData.royaltyAmount} onChange={e => setFormData({...formData, royaltyAmount: Number(e.target.value)})} />
+                       <input type="number" className="w-full bg-white rounded-lg p-2 font-black text-purple-900 outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" placeholder="Enter amount" value={formData.royaltyAmount && formData.royaltyAmount !== 0 ? formData.royaltyAmount : ''} onChange={e => setFormData({...formData, royaltyAmount: Number(e.target.value) || 0})} onKeyDown={handleKeyDown} />
                      </div>
                    )}
 
@@ -499,11 +613,11 @@ const CustomerList: React.FC<CustomerListProps> = ({ customers, setCustomers, in
                      <div className="bg-emerald-50 p-4 rounded-xl border border-emerald-100 grid grid-cols-2 gap-4">
                        <div>
                          <label className="block text-[10px] font-black text-emerald-600 uppercase tracking-widest mb-2">Principal Lent (Asset)</label>
-                         <input type="number" className="w-full bg-white rounded-lg p-2 font-black text-emerald-900 outline-none" value={formData.interestPrincipal} onChange={e => setFormData({...formData, interestPrincipal: Number(e.target.value)})} />
+                         <input type="number" className="w-full bg-white rounded-lg p-2 font-black text-emerald-900 outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" placeholder="Enter amount" value={formData.interestPrincipal && formData.interestPrincipal !== 0 ? formData.interestPrincipal : ''} onChange={e => setFormData({...formData, interestPrincipal: Number(e.target.value) || 0})} onKeyDown={handleKeyDown} />
                        </div>
                        <div>
                          <label className="block text-[10px] font-black text-emerald-600 uppercase tracking-widest mb-2">Interest Rate (%)</label>
-                         <input type="number" step="0.1" className="w-full bg-white rounded-lg p-2 font-black text-emerald-900 outline-none" value={formData.interestRate} onChange={e => setFormData({...formData, interestRate: Number(e.target.value)})} />
+                         <input type="number" step="0.1" className="w-full bg-white rounded-lg p-2 font-black text-emerald-900 outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" placeholder="Rate %" value={formData.interestRate && formData.interestRate !== 0 ? formData.interestRate : ''} onChange={e => setFormData({...formData, interestRate: Number(e.target.value) || 0})} onKeyDown={handleKeyDown} />
                        </div>
                      </div>
                    )}
@@ -521,16 +635,16 @@ const CustomerList: React.FC<CustomerListProps> = ({ customers, setCustomers, in
                       <div className="grid grid-cols-2 gap-4">
                          <div>
                             <label className="block text-[10px] font-black text-rose-400 uppercase tracking-widest mb-2">Principal Borrowed (Liability)</label>
-                            <input type="number" className="w-full bg-white border border-rose-200 rounded-xl p-3 font-display font-black text-lg text-rose-600 outline-none" value={formData.creditPrincipal} onChange={e => setFormData({...formData, creditPrincipal: Number(e.target.value)})} />
+                            <input type="number" className="w-full bg-white border border-rose-200 rounded-xl p-3 font-display font-black text-lg text-rose-600 outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" placeholder="Enter amount" value={formData.creditPrincipal && formData.creditPrincipal !== 0 ? formData.creditPrincipal : ''} onChange={e => setFormData({...formData, creditPrincipal: Number(e.target.value) || 0})} onKeyDown={handleKeyDown} />
                          </div>
                          <div>
                             <label className="block text-[10px] font-black text-rose-400 uppercase tracking-widest mb-2">Interest Rate (%)</label>
-                            <input type="number" step="0.1" className="w-full bg-white border border-rose-200 rounded-xl p-3 font-display font-black text-lg text-rose-600 outline-none" value={formData.interestRate} onChange={e => setFormData({...formData, interestRate: Number(e.target.value)})} />
+                            <input type="number" step="0.1" className="w-full bg-white border border-rose-200 rounded-xl p-3 font-display font-black text-lg text-rose-600 outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" placeholder="Rate %" value={formData.interestRate && formData.interestRate !== 0 ? formData.interestRate : ''} onChange={e => setFormData({...formData, interestRate: Number(e.target.value) || 0})} onKeyDown={handleKeyDown} />
                          </div>
                       </div>
                       <div className="mt-4 pt-4 border-t border-rose-200/50">
                          <label className="block text-[10px] font-black text-rose-400 uppercase tracking-widest mb-2">Opening Payable (Trade/Other)</label>
-                         <input type="number" className="w-full bg-white border border-rose-200 rounded-xl p-3 font-display font-black text-lg text-rose-600 outline-none" placeholder="0" value={Math.abs(formData.openingBalance || 0)} onChange={e => setFormData({...formData, openingBalance: -Math.abs(Number(e.target.value))})} />
+                         <input type="number" className="w-full bg-white border border-rose-200 rounded-xl p-3 font-display font-black text-lg text-rose-600 outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" placeholder="Enter amount" value={formData.openingBalance && formData.openingBalance !== 0 ? Math.abs(formData.openingBalance) : ''} onChange={e => setFormData({...formData, openingBalance: e.target.value ? -Math.abs(Number(e.target.value)) : 0})} onKeyDown={handleKeyDown} />
                          <p className="text-[9px] font-bold text-rose-400 mt-1">Starting balance for non-loan trade payables.</p>
                       </div>
                    </div>

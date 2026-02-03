@@ -207,7 +207,7 @@ const PaymentList: React.FC<PaymentListProps> = ({
               <div className="grid grid-cols-2 gap-6">
                 <div>
                   <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Amount (₹)</label>
-                  <input required type="number" className="w-full border-2 border-slate-100 p-3 rounded-2xl text-xl font-display font-black outline-none focus:border-indigo-500 bg-slate-50" value={formData.amount} onChange={e => setFormData({...formData, amount: Number(e.target.value)})} />
+                  <input required type="number" className="w-full border-2 border-slate-100 p-3 rounded-2xl text-xl font-display font-black outline-none focus:border-indigo-500 bg-slate-50 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={formData.amount} onChange={e => setFormData({...formData, amount: Number(e.target.value)})} />
                 </div>
                 <div>
                   <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Entry Date</label>

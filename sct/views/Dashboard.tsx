@@ -12,8 +12,8 @@ interface DashboardProps {
   customers: Customer[];
 }
 
-const Dashboard: React.FC<DashboardProps> = ({ stats, customers, role }) => {
-  const formatCurrency = (val: number) => `₹${Math.abs(val || 0).toLocaleString('en-IN')}`;
+const Dashboard: React.FC<DashboardProps> = ({ stats, customers, role, invoices }) => {
+  const formatCurrency = (val: number) => `${Math.abs(val || 0).toFixed(2)} INR`;
 
   // --- Real-time Projections ---
   const projections = useMemo(() => {
@@ -26,8 +26,25 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, customers, role }) => {
     const totalAssets = stats.cashInHand + stats.bankCUB + stats.bankKVB + stats.receivableOutstanding + stats.totalInvestments;
     const netWorth = totalAssets - stats.payableOutstanding;
 
-    return { royaltyCount, royaltyValue, interestCount, interestYield, netWorth };
-  }, [customers, stats]);
+    // Calculate category-wise receivables and payables
+    const royaltyReceivable = invoices.filter(i => i.type === 'ROYALTY' && i.status === 'UNPAID' && i.direction === 'IN').reduce((acc, i) => acc + i.balance, 0);
+    const royaltyPayable = invoices.filter(i => i.type === 'ROYALTY' && i.status === 'UNPAID' && i.direction === 'OUT').reduce((acc, i) => acc + i.balance, 0);
+    
+    const loanReceivable = invoices.filter(i => i.type === 'INTEREST' && i.status === 'UNPAID' && i.direction === 'IN').reduce((acc, i) => acc + i.balance, 0);
+    const loanPayable = invoices.filter(i => i.type === 'INTEREST_OUT' && i.status === 'UNPAID' && i.direction === 'OUT').reduce((acc, i) => acc + i.balance, 0);
+    
+    const chitReceivable = invoices.filter(i => i.type === 'CHIT' && i.status === 'UNPAID' && i.direction === 'IN').reduce((acc, i) => acc + i.balance, 0);
+    const chitPayable = invoices.filter(i => i.type === 'CHIT' && i.status === 'UNPAID' && i.direction === 'OUT').reduce((acc, i) => acc + i.balance, 0);
+    
+    const generalReceivable = invoices.filter(i => !['ROYALTY', 'INTEREST', 'CHIT'].includes(i.type) && i.status === 'UNPAID' && i.direction === 'IN').reduce((acc, i) => acc + i.balance, 0);
+    const generalPayable = invoices.filter(i => !['ROYALTY', 'INTEREST_OUT', 'CHIT'].includes(i.type) && i.status === 'UNPAID' && i.direction === 'OUT').reduce((acc, i) => acc + i.balance, 0);
+
+    return { 
+      royaltyCount, royaltyValue, interestCount, interestYield, netWorth,
+      royaltyReceivable, royaltyPayable, loanReceivable, loanPayable,
+      chitReceivable, chitPayable, generalReceivable, generalPayable
+    };
+  }, [customers, stats, invoices]);
 
   // --- Chart Data ---
   const chartData = useMemo(() => {
@@ -105,27 +122,88 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, customers, role }) => {
         </div>
 
         {/* 4. Monthly Performance (Wide) */}
-        <div className="md:col-span-2 bg-white rounded-[2rem] p-8 shadow-soft border border-white/50">
+        <div className="md:col-span-4 bg-white rounded-[2rem] p-8 shadow-soft border border-white/50">
            <div className="flex justify-between items-center mb-6">
               <h3 className="font-bold text-slate-800">Monthly Performance</h3>
               <div className="text-xs font-medium text-slate-400 bg-slate-50 px-2 py-1 rounded-lg">Current Month</div>
            </div>
+           <div className="flex gap-4 w-full">
+              <div className="flex-1 p-3 bg-slate-50 rounded-2xl border border-slate-100 overflow-hidden">
+                 <div className="text-[10px] font-bold text-slate-400 uppercase mb-1 tracking-wider">Royalty</div>
+                 <div className="text-sm sm:text-base font-bold text-slate-800 whitespace-nowrap">{formatCurrency(stats.royaltyIncomeMonth)}</div>
+              </div>
+              <div className="flex-1 p-3 bg-slate-50 rounded-2xl border border-slate-100 overflow-hidden">
+                 <div className="text-[10px] font-bold text-slate-400 uppercase mb-1 tracking-wider">Interest</div>
+                 <div className="text-sm sm:text-base font-bold text-slate-800 whitespace-nowrap">{formatCurrency(stats.interestIncomeMonth)}</div>
+              </div>
+              <div className="flex-1 p-3 bg-slate-50 rounded-2xl border border-slate-100 overflow-hidden">
+                 <div className="text-[10px] font-bold text-slate-400 uppercase mb-1 tracking-wider">Chits</div>
+                 <div className="text-sm sm:text-base font-bold text-amber-500 whitespace-nowrap">{formatCurrency(stats.chitIncomeMonth)}</div>
+              </div>
+              <div className="flex-1 p-3 bg-rose-50 rounded-2xl border border-rose-100 overflow-hidden">
+                 <div className="text-[10px] font-bold text-rose-400 uppercase mb-1 tracking-wider">Expenses</div>
+                 <div className="text-sm sm:text-base font-bold text-rose-600 whitespace-nowrap">{formatCurrency(stats.expensesMonth)}</div>
+              </div>
+           </div>
+        </div>
+
+        {/* 4.5. Receivables & Payables Breakdown (Wide) */}
+        <div className="md:col-span-4 bg-white rounded-[2rem] p-8 shadow-soft border border-white/50">
+           <div className="flex justify-between items-center mb-6">
+              <h3 className="font-bold text-slate-800">Outstanding Balances</h3>
+              <div className="text-xs font-medium text-slate-400 bg-slate-50 px-2 py-1 rounded-lg">By Category</div>
+           </div>
            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                 <div className="text-[10px] font-bold text-slate-400 uppercase mb-1">Royalty</div>
-                 <div className="text-xl font-bold text-slate-800">{formatCurrency(stats.royaltyIncomeMonth)}</div>
+              {/* ROYALTY */}
+              <div className="space-y-2">
+                <div className="p-3 bg-blue-50 rounded-2xl border border-blue-100 overflow-hidden">
+                   <div className="text-[10px] font-bold text-blue-400 uppercase mb-1 tracking-wider">ROYALTY</div>
+                   <div className="text-sm sm:text-base font-bold text-blue-900 whitespace-nowrap">{formatCurrency(projections.royaltyReceivable)}</div>
+                   <div className="text-[9px] text-blue-400 uppercase tracking-widest mt-0.5">Receivable</div>
+                </div>
+                <div className="p-3 bg-blue-50 rounded-2xl border border-blue-100 overflow-hidden">
+                   <div className="text-sm sm:text-base font-bold text-blue-900 whitespace-nowrap">{formatCurrency(projections.royaltyPayable)}</div>
+                   <div className="text-[9px] text-blue-400 uppercase tracking-widest">Payable</div>
+                </div>
               </div>
-              <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                 <div className="text-[10px] font-bold text-slate-400 uppercase mb-1">Interest</div>
-                 <div className="text-xl font-bold text-slate-800">{formatCurrency(stats.interestIncomeMonth)}</div>
+
+              {/* LOAN */}
+              <div className="space-y-2">
+                <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 overflow-hidden">
+                   <div className="text-[10px] font-bold text-slate-400 uppercase mb-1 tracking-wider">LOAN</div>
+                   <div className="text-sm sm:text-base font-bold text-slate-800 whitespace-nowrap">{formatCurrency(projections.loanReceivable)}</div>
+                   <div className="text-[9px] text-slate-400 uppercase tracking-widest mt-0.5">Receivable</div>
+                </div>
+                <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 overflow-hidden">
+                   <div className="text-sm sm:text-base font-bold text-slate-800 whitespace-nowrap">{formatCurrency(projections.loanPayable)}</div>
+                   <div className="text-[9px] text-slate-400 uppercase tracking-widest">Payable</div>
+                </div>
               </div>
-              <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                 <div className="text-[10px] font-bold text-slate-400 uppercase mb-1">Chits</div>
-                 <div className="text-xl font-bold text-amber-500">{formatCurrency(stats.chitIncomeMonth)}</div>
+
+              {/* CHIT */}
+              <div className="space-y-2">
+                <div className="p-3 bg-orange-50 rounded-2xl border border-orange-100 overflow-hidden">
+                   <div className="text-[10px] font-bold text-orange-400 uppercase mb-1 tracking-wider">CHIT</div>
+                   <div className="text-sm sm:text-base font-bold text-orange-900 whitespace-nowrap">{formatCurrency(projections.chitReceivable)}</div>
+                   <div className="text-[9px] text-orange-400 uppercase tracking-widest mt-0.5">Receivable</div>
+                </div>
+                <div className="p-3 bg-orange-50 rounded-2xl border border-orange-100 overflow-hidden">
+                   <div className="text-sm sm:text-base font-bold text-orange-900 whitespace-nowrap">{formatCurrency(projections.chitPayable)}</div>
+                   <div className="text-[9px] text-orange-400 uppercase tracking-widest">Payable</div>
+                </div>
               </div>
-              <div className="p-4 bg-rose-50 rounded-2xl border border-rose-100">
-                 <div className="text-[10px] font-bold text-rose-400 uppercase mb-1">Expenses</div>
-                 <div className="text-xl font-bold text-rose-600">{formatCurrency(stats.expensesMonth)}</div>
+
+              {/* GENERAL */}
+              <div className="space-y-2">
+                <div className="p-3 bg-amber-50 rounded-2xl border border-amber-100 overflow-hidden">
+                   <div className="text-[10px] font-bold text-amber-500 uppercase mb-1 tracking-wider">OTHER</div>
+                   <div className="text-sm sm:text-base font-bold text-amber-900 whitespace-nowrap">{formatCurrency(projections.generalReceivable)}</div>
+                   <div className="text-[9px] text-amber-500 uppercase tracking-widest mt-0.5">Receivable</div>
+                </div>
+                <div className="p-3 bg-amber-50 rounded-2xl border border-amber-100 overflow-hidden">
+                   <div className="text-sm sm:text-base font-bold text-amber-900 whitespace-nowrap">{formatCurrency(projections.generalPayable)}</div>
+                   <div className="text-[9px] text-amber-500 uppercase tracking-widest">Payable</div>
+                </div>
               </div>
            </div>
         </div>

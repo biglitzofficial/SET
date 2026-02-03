@@ -258,14 +258,11 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
          }
       }
 
-      // A. Create INVOICES (Receivables) for all members
-      const memberSlots: Record<string, number> = {};
-      group.members.forEach(mid => { memberSlots[mid] = (memberSlots[mid] || 0) + 1; });
-      
-      Object.entries(memberSlots).forEach(([mid, slots]) => {
+      // A. Create INVOICES (Receivables) for all members - ONE INVOICE PER SEAT
+      group.members.forEach((mid, seatIndex) => {
         const cust = customers.find(c => c.id === mid);
         if (cust) {
-          const totalAmount = Math.round(chitCalc.netPayable * slots);
+          const seatAmount = Math.round(chitCalc.netPayable);
           batch.push({
             id: Math.random().toString(36).substr(2, 9),
             invoiceNumber: getNextInvoiceNumber('CHIT', date, batch),
@@ -273,11 +270,11 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
             customerName: cust.name,
             type: 'CHIT',
             direction: 'IN',
-            amount: totalAmount,
+            amount: seatAmount,
             date: date,
             status: 'UNPAID',
-            balance: totalAmount,
-            notes: `Month ${seqMonth} | Winner: ${customers.find(c=>c.id === chitWinnerId)?.name} | Div: ₹${Math.round(chitCalc.dividendPerMember)}`
+            balance: seatAmount,
+            notes: `Month ${seqMonth} | Seat #${seatIndex + 1} | Winner: ${customers.find(c=>c.id === chitWinnerId)?.name} | Div: ₹${Math.round(chitCalc.dividendPerMember)}`
           });
         }
       });
@@ -627,7 +624,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
                               </div>
                               <div>
                                 <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-2">Bid / Discount (₹)</label>
-                                <input type="number" className="w-full border-2 border-slate-100 rounded-xl px-4 py-3 text-sm font-bold bg-white outline-none focus:border-indigo-500" value={chitBidAmount || ''} onChange={e => setChitBidAmount(Number(e.target.value))} />
+                                <input type="number" className="w-full border-2 border-slate-100 rounded-xl px-4 py-3 text-sm font-bold bg-white outline-none focus:border-indigo-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={chitBidAmount || ''} onChange={e => setChitBidAmount(Number(e.target.value))} />
                               </div>
                            </div>
 
@@ -692,7 +689,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
                             </thead>
                             <tbody className="bg-white divide-y divide-slate-50">
                                {reviewBatch.map((inv, i) => (
-                                  <tr key={i}>
+                                  <tr key={`${inv.id}-${i}`}>
                                      <td className="px-6 py-3 text-sm font-bold text-slate-700">{inv.customerName}</td>
                                      <td className="px-6 py-3 text-center"><InvoiceBadge type={inv.type} direction={inv.direction} /></td>
                                      <td className={`px-6 py-3 text-sm font-bold text-right ${inv.direction === 'OUT' ? 'text-rose-600' : 'text-slate-900'}`}>

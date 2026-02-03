@@ -307,11 +307,11 @@ const LoanList: React.FC<LoanListProps> = ({ liabilities, setLiabilities, custom
                  <div className="grid grid-cols-2 gap-4">
                     <div>
                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Principal (₹)</label>
-                       <input required type="number" className="w-full border-2 border-slate-100 rounded-xl px-4 py-3 text-sm font-bold bg-slate-50 outline-none focus:border-indigo-500" value={formData.principal || ''} onChange={e => setFormData({...formData, principal: Number(e.target.value)})} />
+                       <input required type="number" className="w-full border-2 border-slate-100 rounded-xl px-4 py-3 text-sm font-bold bg-slate-50 outline-none focus:border-indigo-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={formData.principal || ''} onChange={e => setFormData({...formData, principal: Number(e.target.value)})} />
                     </div>
                     <div>
                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Rate (%)</label>
-                       <input required type="number" step="0.1" className="w-full border-2 border-slate-100 rounded-xl px-4 py-3 text-sm font-bold bg-slate-50 outline-none focus:border-indigo-500" value={formData.interestRate || ''} onChange={e => setFormData({...formData, interestRate: Number(e.target.value)})} />
+                       <input required type="number" step="0.1" className="w-full border-2 border-slate-100 rounded-xl px-4 py-3 text-sm font-bold bg-slate-50 outline-none focus:border-indigo-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={formData.interestRate || ''} onChange={e => setFormData({...formData, interestRate: Number(e.target.value)})} />
                     </div>
                  </div>
                  <div className="grid grid-cols-2 gap-4">
@@ -321,7 +321,7 @@ const LoanList: React.FC<LoanListProps> = ({ liabilities, setLiabilities, custom
                     </div>
                     <div>
                         <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Tenure (Months)</label>
-                        <input type="number" className="w-full border-2 border-slate-100 rounded-xl px-4 py-3 text-sm font-bold bg-slate-50 outline-none focus:border-indigo-500" value={formData.tenureMonths || ''} onChange={e => setFormData({...formData, tenureMonths: Number(e.target.value)})} />
+                        <input type="number" className="w-full border-2 border-slate-100 rounded-xl px-4 py-3 text-sm font-bold bg-slate-50 outline-none focus:border-indigo-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={formData.tenureMonths || ''} onChange={e => setFormData({...formData, tenureMonths: Number(e.target.value)})} />
                     </div>
                  </div>
                  <div className="flex gap-3 pt-4">
@@ -341,7 +341,7 @@ const LoanList: React.FC<LoanListProps> = ({ liabilities, setLiabilities, custom
                <form onSubmit={handlePayment} className="space-y-4">
                   <div>
                      <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Repayment Amount</label>
-                     <input autoFocus required type="number" className="w-full border-2 border-slate-100 rounded-xl px-4 py-3 text-xl font-black text-slate-900 outline-none focus:border-indigo-500" value={liabilityPayAmount || ''} onChange={e => setLiabilityPayAmount(Number(e.target.value))} />
+                     <input autoFocus required type="number" className="w-full border-2 border-slate-100 rounded-xl px-4 py-3 text-xl font-black text-slate-900 outline-none focus:border-indigo-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={liabilityPayAmount || ''} onChange={e => setLiabilityPayAmount(Number(e.target.value))} />
                   </div>
                   <div className="flex gap-3 pt-2">
                      <button type="button" onClick={() => setLiabilityAction(null)} className="flex-1 py-3 text-slate-400 font-black uppercase text-[10px] tracking-widest hover:bg-slate-50 rounded-xl">Cancel</button>

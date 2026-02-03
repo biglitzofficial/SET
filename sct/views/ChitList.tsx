@@ -63,6 +63,39 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
     setFormData(prev => ({ ...prev, members: newMembers }));
   };
 
+  // --- BULK SELECTION METHODS ---
+  const handleQuickFill = (customerId: string, count: number) => {
+    const availableSlots = formData.durationMonths - formData.members.length;
+    const slotsToFill = Math.min(count, availableSlots);
+    const newMembers = [...formData.members];
+    for (let i = 0; i < slotsToFill; i++) {
+      newMembers.push(customerId);
+    }
+    setFormData(prev => ({ ...prev, members: newMembers }));
+  };
+
+  const handleFillRemaining = () => {
+    const chitCustomers = customers.filter(c => c.isChit);
+    if (chitCustomers.length === 0) return;
+    
+    const availableSlots = formData.durationMonths - formData.members.length;
+    const newMembers = [...formData.members];
+    
+    for (let i = 0; i < availableSlots; i++) {
+      // Distribute evenly among chit customers
+      const customer = chitCustomers[i % chitCustomers.length];
+      newMembers.push(customer.id);
+    }
+    
+    setFormData(prev => ({ ...prev, members: newMembers }));
+  };
+
+  const handleClearAll = () => {
+    if (window.confirm('Clear all seat allocations?')) {
+      setFormData(prev => ({ ...prev, members: [] }));
+    }
+  };
+
   // --- LOGIC: SAVING CHIT GROUP ---
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -300,31 +333,31 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
                  <button onClick={() => setShowForm(false)} className="h-12 w-12 bg-white rounded-full flex items-center justify-center shadow-md hover:text-red-500 transition"><i className="fas fa-times text-xl"></i></button>
               </div>
 
-              <form onSubmit={handleSave} className="flex-1 overflow-hidden flex flex-col lg:flex-row">
-                 <div className="w-full lg:w-1/3 p-8 overflow-y-auto space-y-6 border-r border-slate-100">
+              <form onSubmit={handleSave} className="flex-1 overflow-hidden flex flex-col lg:flex-row min-h-0">
+                 <div className="w-full lg:w-1/3 p-8 overflow-y-auto space-y-6 border-r border-slate-100 custom-scrollbar">
                     <div>
                        <label className="text-[10px] font-black text-slate-400 uppercase mb-2 block tracking-widest italic">Group Identity</label>
                        <input required className="w-full p-4 bg-slate-50 rounded-2xl font-black uppercase text-xs outline-none focus:border-orange-400 border-2 border-transparent transition" placeholder="E.G. G-5L-2024" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value.toUpperCase()})} />
                     </div>
                     <div>
                        <label className="text-[10px] font-black text-slate-400 uppercase mb-2 block tracking-widest italic">Duration (Months)</label>
-                       <input required type="number" className="w-full p-4 bg-slate-50 rounded-2xl font-black text-sm outline-none" value={formData.durationMonths || ''} onChange={e => setFormData({...formData, durationMonths: Number(e.target.value)})} />
+                       <input required type="number" className="w-full p-4 bg-slate-50 rounded-2xl font-black text-sm outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={formData.durationMonths || ''} onChange={e => setFormData({...formData, durationMonths: Number(e.target.value)})} />
                        <p className="text-[9px] font-bold text-orange-400 mt-2">* Defines total slots (e.g., 20)</p>
                     </div>
                     <div className="grid grid-cols-2 gap-4">
                        <div>
                           <label className="text-[10px] font-black text-slate-400 uppercase mb-2 block tracking-widest italic">Chit Value (₹)</label>
-                          <input required type="number" className="w-full p-4 bg-slate-50 rounded-2xl font-black text-sm outline-none" value={formData.totalValue || ''} onChange={e => setFormData({...formData, totalValue: Number(e.target.value)})} />
+                          <input required type="number" className="w-full p-4 bg-slate-50 rounded-2xl font-black text-sm outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={formData.totalValue || ''} onChange={e => setFormData({...formData, totalValue: Number(e.target.value)})} />
                        </div>
                        <div>
                           <label className="text-[10px] font-black text-slate-400 uppercase mb-2 block tracking-widest italic">Installment (₹)</label>
-                          <input required type="number" className="w-full p-4 bg-slate-50 rounded-2xl font-black text-sm outline-none" value={formData.monthlyInstallment || ''} onChange={e => setFormData({...formData, monthlyInstallment: Number(e.target.value)})} />
+                          <input required type="number" className="w-full p-4 bg-slate-50 rounded-2xl font-black text-sm outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={formData.monthlyInstallment || ''} onChange={e => setFormData({...formData, monthlyInstallment: Number(e.target.value)})} />
                        </div>
                     </div>
                     <div className="grid grid-cols-2 gap-4">
                        <div>
                           <label className="text-[10px] font-black text-slate-400 uppercase mb-2 block tracking-widest italic">Commission (%)</label>
-                          <input required type="number" className="w-full p-4 bg-slate-50 rounded-2xl font-black text-sm outline-none" value={formData.commissionPercentage || ''} onChange={e => setFormData({...formData, commissionPercentage: Number(e.target.value)})} />
+                          <input required type="number" className="w-full p-4 bg-slate-50 rounded-2xl font-black text-sm outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={formData.commissionPercentage || ''} onChange={e => setFormData({...formData, commissionPercentage: Number(e.target.value)})} />
                        </div>
                        <div>
                           <label className="text-[10px] font-black text-slate-400 uppercase mb-2 block tracking-widest italic">Start Date</label>
@@ -333,16 +366,92 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
                     </div>
                  </div>
 
-                 <div className="flex-1 p-8 bg-slate-50/50 flex flex-col overflow-hidden relative">
+                 <div className="flex-1 p-8 bg-slate-50/50 flex flex-col overflow-hidden relative min-h-0">
                     {!showMemberSelector ? (
                       <>
-                        <div className="flex justify-between items-center mb-6">
+                        <div className="flex-shrink-0 flex justify-between items-center mb-3">
                            <h4 className="text-[10px] font-black uppercase text-slate-400 tracking-widest italic">Seat Allocation Matrix</h4>
                            <span className="bg-white px-3 py-1 rounded-lg text-[10px] font-black uppercase shadow-sm">
                              {formData.members.length} / {formData.durationMonths} Filled
                            </span>
                         </div>
-                        <div className="flex-1 overflow-y-auto custom-scrollbar">
+
+                        {/* QUICK SELECTION TOOLBAR */}
+                        <div className="flex-shrink-0 bg-white rounded-2xl border-2 border-slate-200 p-3 mb-3 shadow-sm">
+                          <div className="flex flex-col gap-2">
+                            {/* Quick Fill - Customer + Seats Input */}
+                            <div className="flex items-center gap-2">
+                              <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap">Quick Fill:</label>
+                              <select 
+                                id="quickFillCustomer"
+                                className="flex-1 text-xs font-bold bg-slate-50 border-2 border-slate-200 rounded-lg px-3 py-2 outline-none focus:border-orange-400"
+                                defaultValue=""
+                              >
+                                <option value="" disabled>Select customer...</option>
+                                {customers.filter(c => c.isChit).map(customer => (
+                                  <option key={customer.id} value={customer.id}>
+                                    {customer.name}
+                                  </option>
+                                ))}
+                              </select>
+                              <input 
+                                id="quickFillSeats"
+                                type="number" 
+                                min="1" 
+                                max={formData.durationMonths - formData.members.length}
+                                placeholder="Seats"
+                                className="w-24 text-xs font-bold bg-slate-50 border-2 border-slate-200 rounded-lg px-3 py-2 outline-none focus:border-orange-400 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const customerSelect = document.getElementById('quickFillCustomer') as HTMLSelectElement;
+                                  const seatsInput = document.getElementById('quickFillSeats') as HTMLInputElement;
+                                  const customerId = customerSelect?.value;
+                                  const seats = parseInt(seatsInput?.value || '0');
+                                  
+                                  if (customerId && seats > 0) {
+                                    handleQuickFill(customerId, seats);
+                                    customerSelect.value = '';
+                                    seatsInput.value = '';
+                                  }
+                                }}
+                                className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white rounded-lg text-[9px] font-black uppercase tracking-widest transition whitespace-nowrap"
+                              >
+                                <i className="fas fa-plus-circle mr-1"></i> Fill
+                              </button>
+                            </div>
+
+                            {/* Action Buttons */}
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                onClick={handleFillRemaining}
+                                disabled={formData.members.length >= formData.durationMonths}
+                                className="flex-1 py-1.5 bg-emerald-500 hover:bg-emerald-600 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-lg text-[9px] font-black uppercase tracking-widest transition"
+                              >
+                                <i className="fas fa-magic mr-1"></i> Auto-Fill Remaining
+                              </button>
+                              <button
+                                type="button"
+                                onClick={handleClearAll}
+                                disabled={formData.members.length === 0}
+                                className="flex-1 py-1.5 bg-rose-500 hover:bg-rose-600 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-lg text-[9px] font-black uppercase tracking-widest transition"
+                              >
+                                <i className="fas fa-eraser mr-1"></i> Clear All
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setShowMemberSelector(true)}
+                                className="flex-1 py-1.5 bg-blue-500 hover:bg-blue-600 text-white rounded-lg text-[9px] font-black uppercase tracking-widest transition"
+                              >
+                                <i className="fas fa-hand-pointer mr-1"></i> Manual Select
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0">
                            <div className="grid grid-cols-4 md:grid-cols-5 gap-3">
                               {Array.from({ length: formData.durationMonths }).map((_, i) => {
                                  const memberId = formData.members[i];
@@ -359,7 +468,7 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
                                           <>
                                              <div className="h-8 w-8 rounded-full bg-orange-50 text-orange-600 flex items-center justify-center text-[10px] font-black mb-1">{member?.name.charAt(0)}</div>
                                              <div className="text-[9px] font-black text-slate-800 uppercase text-center leading-tight line-clamp-2">{member?.name || 'Unknown'}</div>
-                                             <button onClick={(e) => { e.stopPropagation(); handleRemoveMemberAtIndex(i); }} className="absolute -top-2 -right-2 h-6 w-6 bg-white rounded-full shadow-md text-rose-500 hover:bg-rose-500 hover:text-white flex items-center justify-center transition opacity-0 group-hover:opacity-100 scale-75">
+                                             <button type="button" onClick={(e) => { e.stopPropagation(); e.preventDefault(); handleRemoveMemberAtIndex(i); }} className="absolute -top-2 -right-2 h-6 w-6 bg-white rounded-full shadow-md text-rose-500 hover:bg-rose-500 hover:text-white flex items-center justify-center transition opacity-0 group-hover:opacity-100 scale-75">
                                                 <i className="fas fa-times text-[10px]"></i>
                                              </button>
                                           </>
@@ -399,11 +508,11 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
                     )}
                  </div>
                  
-                 <div className="lg:hidden p-6 bg-white border-t border-slate-100">
-                    <button type="submit" className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black uppercase tracking-widest shadow-xl">Save Group</button>
+                 <div className="lg:hidden p-4 bg-white border-t border-slate-100">
+                    <button type="submit" className="w-full py-3 bg-slate-900 text-white rounded-2xl font-black uppercase tracking-widest shadow-xl">Save Group</button>
                  </div>
-                 <div className="hidden lg:flex p-8 border-t border-slate-100 items-end justify-end bg-white w-full lg:w-auto lg:absolute lg:bottom-0 lg:right-0 lg:left-0 pointer-events-none">
-                    <button type="submit" className="w-full lg:w-auto px-12 py-4 bg-slate-900 text-white rounded-2xl font-black uppercase tracking-widest shadow-xl hover:scale-105 transition pointer-events-auto">Commit Configuration</button>
+                 <div className="hidden lg:flex p-4 border-t border-slate-100 items-center justify-end bg-white w-full lg:w-auto lg:absolute lg:bottom-0 lg:right-0 lg:left-0 pointer-events-none">
+                    <button type="submit" className="w-full lg:w-auto px-12 py-3 bg-slate-900 text-white rounded-2xl font-black uppercase tracking-widest shadow-xl hover:scale-105 transition pointer-events-auto">Commit Configuration</button>
                  </div>
               </form>
            </div>

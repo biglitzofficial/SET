@@ -102,13 +102,17 @@ export interface Investment {
 export interface AuditLog {
   id: string;
   timestamp: number;
-  action: 'CREATE' | 'EDIT' | 'DELETE' | 'VOID';
-  entityType: 'PAYMENT' | 'INVOICE' | 'CUSTOMER' | 'LOAN';
+  action: 'CREATE' | 'EDIT' | 'DELETE' | 'VOID' | 'LOGIN' | 'LOGOUT';
+  entityType: 'PAYMENT' | 'INVOICE' | 'CUSTOMER' | 'LOAN' | 'CHIT' | 'INVESTMENT' | 'SETTINGS' | 'USER';
   entityId: string;
   description: string;
   performedBy: UserRole;
+  userId?: string; // User ID who performed the action
+  userName?: string; // User name for display
   oldData?: string;
   newData?: string;
+  ipAddress?: string;
+  changes?: string; // Summary of what changed
 }
 
 export interface ChitAuction {

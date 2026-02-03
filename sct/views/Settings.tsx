@@ -1,6 +1,7 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Customer, ChitGroup, Invoice, StaffUser, AuditLog, Payment, Liability, Investment, BankAccount } from '../types';
+import { settingsAPI } from '../services/api';
 
 interface SettingsProps {
   expenseCategories: string[];
@@ -51,7 +52,28 @@ const Settings: React.FC<SettingsProps> = ({
   bankAccounts = [], setBankAccounts,
   currentUser
 }) => {
-  const [activeTab, setActiveTab] = useState<'FINANCE' | 'ACCESS' | 'DATA'>('FINANCE');
+  const [activeTab, setActiveTab] = useState<'FINANCE' | 'ACCESS' | 'DATA' | 'AUDIT'>('FINANCE');
+  
+  // Auto-save settings to backend when categories change
+  useEffect(() => {
+    const saveSettings = async () => {
+      try {
+        await settingsAPI.update({
+          expenseCategories,
+          savingCategories,
+          otherBusinesses,
+          incomeCategories,
+          bankAccounts
+        });
+      } catch (error) {
+        console.error('Failed to auto-save settings:', error);
+      }
+    };
+    
+    // Debounce to avoid too many API calls
+    const timeoutId = setTimeout(saveSettings, 500);
+    return () => clearTimeout(timeoutId);
+  }, [expenseCategories, savingCategories, otherBusinesses, incomeCategories, bankAccounts]);
   
   // STAFF STATE
   const [showStaffForm, setShowStaffForm] = useState(false);
@@ -203,7 +225,7 @@ const Settings: React.FC<SettingsProps> = ({
       {/* Tabs */}
       <div className="border-b border-slate-200">
         <nav className="-mb-px flex space-x-8 overflow-x-auto" aria-label="Tabs">
-          {['FINANCE', 'ACCESS', 'DATA'].map(tab => (
+          {['FINANCE', 'ACCESS', 'DATA', 'AUDIT'].map(tab => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab as any)}
@@ -235,7 +257,7 @@ const Settings: React.FC<SettingsProps> = ({
                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest">Cash Drawer</label>
                        <span className="text-[9px] font-black text-slate-300 uppercase">Fixed</span>
                     </div>
-                    <input type="number" className="w-full bg-white border border-slate-200 rounded-lg px-4 py-2 font-bold text-slate-900 outline-none focus:border-indigo-500" value={openingBalances.CASH} onChange={e => setOpeningBalances({...openingBalances, CASH: Number(e.target.value)})} />
+                    <input type="number" className="w-full bg-white border border-slate-200 rounded-lg px-4 py-2 font-bold text-slate-900 outline-none focus:border-indigo-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={openingBalances.CASH} onChange={e => setOpeningBalances({...openingBalances, CASH: Number(e.target.value)})} />
                  </div>
 
                  {bankAccounts.map((bank) => (
@@ -247,7 +269,7 @@ const Settings: React.FC<SettingsProps> = ({
                           </div>
                           <div>
                              <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Opening Balance</label>
-                             <input type="number" className="w-full bg-slate-50 border-none rounded-lg px-3 py-2 font-bold text-xs outline-none focus:ring-2 focus:ring-indigo-100" value={bank.openingBalance} onChange={e => updateBank(bank.id, 'openingBalance', Number(e.target.value))} />
+                             <input type="number" className="w-full bg-slate-50 border-none rounded-lg px-3 py-2 font-bold text-xs outline-none focus:ring-2 focus:ring-indigo-100 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={bank.openingBalance} onChange={e => updateBank(bank.id, 'openingBalance', Number(e.target.value))} />
                           </div>
                        </div>
                        <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -258,7 +280,7 @@ const Settings: React.FC<SettingsProps> = ({
 
                  <div className="pt-4 border-t border-slate-100">
                     <label className="block text-[10px] font-black text-emerald-600 uppercase tracking-widest mb-2">Owner's Capital (Equity)</label>
-                    <input type="number" className="w-full bg-emerald-50 border-2 border-emerald-100 rounded-xl px-4 py-3 font-bold text-emerald-700 outline-none focus:border-emerald-500" value={openingBalances.CAPITAL} onChange={e => setOpeningBalances({...openingBalances, CAPITAL: Number(e.target.value)})} />
+                    <input type="number" className="w-full bg-emerald-50 border-2 border-emerald-100 rounded-xl px-4 py-3 font-bold text-emerald-700 outline-none focus:border-emerald-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={openingBalances.CAPITAL} onChange={e => setOpeningBalances({...openingBalances, CAPITAL: Number(e.target.value)})} />
                  </div>
               </div>
            </div>
@@ -267,7 +289,7 @@ const Settings: React.FC<SettingsProps> = ({
            <div className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-sm h-fit">
               <h3 className="text-lg font-display font-black text-slate-900 uppercase italic tracking-tighter mb-6">Expense Categories</h3>
               <div className="flex flex-wrap gap-2 mb-6">
-                 {expenseCategories.map(cat => (
+                 {expenseCategories.filter(cat => cat && cat.trim()).map(cat => (
                     <span key={cat} className="bg-slate-100 text-slate-600 px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest flex items-center gap-2">
                        {cat}
                        <button onClick={() => setExpenseCategories(prev => prev.filter(c => c !== cat))} className="hover:text-rose-500"><i className="fas fa-times"></i></button>
@@ -275,11 +297,37 @@ const Settings: React.FC<SettingsProps> = ({
                  ))}
               </div>
               <div className="flex gap-2">
-                 <input id="newCat" type="text" placeholder="NEW CATEGORY" className="flex-1 bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 text-xs font-black uppercase outline-none focus:border-indigo-500" />
+                 <input 
+                   id="newCat" 
+                   type="text" 
+                   placeholder="NEW CATEGORY" 
+                   className="flex-1 bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 text-xs font-black uppercase outline-none focus:border-indigo-500"
+                   onKeyDown={(e) => {
+                     if (e.key === 'Enter') {
+                       e.preventDefault();
+                       const input = e.currentTarget;
+                       const value = input.value.trim().toUpperCase();
+                       if(value && !expenseCategories.includes(value)) { 
+                         setExpenseCategories([...expenseCategories, value]); 
+                         input.value = ''; 
+                       } else if (expenseCategories.includes(value)) {
+                         alert('This expense category already exists!');
+                       }
+                     }
+                   }}
+                 />
                  <button 
                    onClick={() => {
                       const input = document.getElementById('newCat') as HTMLInputElement;
-                      if(input.value) { setExpenseCategories([...expenseCategories, input.value.toUpperCase()]); input.value = ''; }
+                      const value = input.value.trim().toUpperCase();
+                      if(value) {
+                        if(!expenseCategories.includes(value)) {
+                          setExpenseCategories([...expenseCategories, value]); 
+                          input.value = '';
+                        } else {
+                          alert('This expense category already exists!');
+                        }
+                      }
                    }}
                    className="bg-indigo-600 text-white px-6 rounded-xl font-black text-xs uppercase hover:bg-indigo-700"
                  >
@@ -294,20 +342,46 @@ const Settings: React.FC<SettingsProps> = ({
               <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-6">Other operational divisions</p>
               
               <div className="flex flex-wrap gap-2 mb-6">
-                 {(otherBusinesses || []).map(biz => (
+                 {(otherBusinesses || []).filter(biz => biz && biz.trim()).map(biz => (
                     <span key={biz} className="bg-blue-50 text-blue-700 px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest flex items-center gap-2">
                        {biz}
                        <button onClick={() => setOtherBusinesses?.(prev => prev.filter(b => b !== biz))} className="hover:text-blue-900"><i className="fas fa-times"></i></button>
                     </span>
                  ))}
-                 {(otherBusinesses || []).length === 0 && <span className="text-xs text-slate-400 italic">No business units added.</span>}
+                 {(otherBusinesses || []).filter(biz => biz && biz.trim()).length === 0 && <span className="text-xs text-slate-400 italic">No business units added.</span>}
               </div>
               <div className="flex gap-2">
-                 <input id="newBiz" type="text" placeholder="NEW UNIT (e.g. TRANSPORT)" className="flex-1 bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 text-xs font-black uppercase outline-none focus:border-blue-500" />
+                 <input 
+                   id="newBiz" 
+                   type="text" 
+                   placeholder="NEW UNIT (e.g. TRANSPORT)" 
+                   className="flex-1 bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 text-xs font-black uppercase outline-none focus:border-blue-500"
+                   onKeyDown={(e) => {
+                     if (e.key === 'Enter') {
+                       e.preventDefault();
+                       const input = e.currentTarget;
+                       const value = input.value.trim().toUpperCase();
+                       if(value && setOtherBusinesses && !(otherBusinesses || []).includes(value)) { 
+                         setOtherBusinesses(prev => [...prev, value]); 
+                         input.value = ''; 
+                       } else if ((otherBusinesses || []).includes(value)) {
+                         alert('This business unit already exists!');
+                       }
+                     }
+                   }}
+                 />
                  <button 
                    onClick={() => {
                       const input = document.getElementById('newBiz') as HTMLInputElement;
-                      if(input.value && setOtherBusinesses) { setOtherBusinesses(prev => [...prev, input.value.toUpperCase()]); input.value = ''; }
+                      const value = input.value.trim().toUpperCase();
+                      if(value && setOtherBusinesses) {
+                        if(!(otherBusinesses || []).includes(value)) {
+                          setOtherBusinesses(prev => [...prev, value]); 
+                          input.value = '';
+                        } else {
+                          alert('This business unit already exists!');
+                        }
+                      }
                    }}
                    className="bg-blue-600 text-white px-6 rounded-xl font-black text-xs uppercase hover:bg-blue-700"
                  >
@@ -322,20 +396,46 @@ const Settings: React.FC<SettingsProps> = ({
               <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-6">Salary, Commissions, Incentives</p>
               
               <div className="flex flex-wrap gap-2 mb-6">
-                 {(incomeCategories || []).map(inc => (
+                 {(incomeCategories || []).filter(inc => inc && inc.trim()).map(inc => (
                     <span key={inc} className="bg-emerald-50 text-emerald-700 px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest flex items-center gap-2">
                        {inc}
                        <button onClick={() => setIncomeCategories?.(prev => prev.filter(i => i !== inc))} className="hover:text-emerald-900"><i className="fas fa-times"></i></button>
                     </span>
                  ))}
-                 {(incomeCategories || []).length === 0 && <span className="text-xs text-slate-400 italic">No income categories defined.</span>}
+                 {(incomeCategories || []).filter(inc => inc && inc.trim()).length === 0 && <span className="text-xs text-slate-400 italic">No income categories defined.</span>}
               </div>
               <div className="flex gap-2">
-                 <input id="newInc" type="text" placeholder="NEW TYPE (e.g. BONUS)" className="flex-1 bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 text-xs font-black uppercase outline-none focus:border-emerald-500" />
+                 <input 
+                   id="newInc" 
+                   type="text" 
+                   placeholder="NEW TYPE (e.g. BONUS)" 
+                   className="flex-1 bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 text-xs font-black uppercase outline-none focus:border-emerald-500"
+                   onKeyDown={(e) => {
+                     if (e.key === 'Enter') {
+                       e.preventDefault();
+                       const input = e.currentTarget;
+                       const value = input.value.trim().toUpperCase();
+                       if(value && setIncomeCategories && !(incomeCategories || []).includes(value)) { 
+                         setIncomeCategories(prev => [...prev, value]); 
+                         input.value = ''; 
+                       } else if ((incomeCategories || []).includes(value)) {
+                         alert('This income category already exists!');
+                       }
+                     }
+                   }}
+                 />
                  <button 
                    onClick={() => {
                       const input = document.getElementById('newInc') as HTMLInputElement;
-                      if(input.value && setIncomeCategories) { setIncomeCategories(prev => [...prev, input.value.toUpperCase()]); input.value = ''; }
+                      const value = input.value.trim().toUpperCase();
+                      if(value && setIncomeCategories) {
+                        if(!(incomeCategories || []).includes(value)) {
+                          setIncomeCategories(prev => [...prev, value]); 
+                          input.value = '';
+                        } else {
+                          alert('This income category already exists!');
+                        }
+                      }
                    }}
                    className="bg-emerald-600 text-white px-6 rounded-xl font-black text-xs uppercase hover:bg-emerald-700"
                  >
@@ -458,6 +558,101 @@ const Settings: React.FC<SettingsProps> = ({
                  ))}
               </div>
            </div>
+        </div>
+      )}
+
+      {/* 5. AUDIT (ACTIVITY LOGS) */}
+      {activeTab === 'AUDIT' && (
+        <div className="space-y-6">
+          <div className="flex justify-between items-center">
+            <div>
+              <h3 className="text-lg font-display font-black text-slate-900 uppercase italic tracking-tighter">Activity Logs</h3>
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Complete Audit Trail with Timestamps</p>
+            </div>
+            <div className="text-right">
+              <div className="text-2xl font-display font-black text-slate-900">{auditLogs.length}</div>
+              <div className="text-[9px] font-bold text-slate-400 uppercase">Total Entries</div>
+            </div>
+          </div>
+
+          {auditLogs.length === 0 ? (
+            <div className="bg-white rounded-[2rem] border border-slate-200 shadow-sm p-16 text-center">
+              <div className="text-6xl text-slate-200 mb-4"><i className="fas fa-clipboard-list"></i></div>
+              <h3 className="text-lg font-black text-slate-400 uppercase">No Audit Logs Yet</h3>
+              <p className="text-xs text-slate-400 mt-2">Activity logs will appear here when users make changes</p>
+            </div>
+          ) : (
+            <div className="bg-white rounded-[2rem] border border-slate-200 shadow-sm overflow-hidden">
+              <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
+                <table className="min-w-full divide-y divide-slate-100">
+                  <thead className="bg-slate-50 sticky top-0 z-10">
+                    <tr>
+                      <th className="px-6 py-4 text-left text-[10px] font-black uppercase tracking-widest text-slate-500">Timestamp</th>
+                      <th className="px-6 py-4 text-left text-[10px] font-black uppercase tracking-widest text-slate-500">User</th>
+                      <th className="px-6 py-4 text-left text-[10px] font-black uppercase tracking-widest text-slate-500">Action</th>
+                      <th className="px-6 py-4 text-left text-[10px] font-black uppercase tracking-widest text-slate-500">Entity</th>
+                      <th className="px-6 py-4 text-left text-[10px] font-black uppercase tracking-widest text-slate-500">Description</th>
+                      <th className="px-6 py-4 text-left text-[10px] font-black uppercase tracking-widest text-slate-500">Changes</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {[...auditLogs].reverse().map((log) => (
+                      <tr key={log.id} className="hover:bg-slate-50 transition">
+                        <td className="px-6 py-4">
+                          <div className="text-xs font-bold text-slate-800">
+                            {new Date(log.timestamp).toLocaleDateString()}
+                          </div>
+                          <div className="text-[10px] text-slate-400">
+                            {new Date(log.timestamp).toLocaleTimeString()}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-2">
+                            <div className={`h-8 w-8 rounded-full flex items-center justify-center text-xs font-black ${
+                              log.performedBy === 'OWNER' ? 'bg-purple-100 text-purple-600' : 'bg-blue-100 text-blue-600'
+                            }`}>
+                              {log.userName ? log.userName.charAt(0).toUpperCase() : log.performedBy.charAt(0)}
+                            </div>
+                            <div>
+                              <div className="text-xs font-black text-slate-800">
+                                {log.userName || (log.performedBy === 'OWNER' ? 'Admin' : 'Staff')}
+                              </div>
+                              <div className="text-[9px] text-slate-400 uppercase">{log.performedBy}</div>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${
+                            log.action === 'CREATE' ? 'bg-emerald-50 text-emerald-600' :
+                            log.action === 'EDIT' ? 'bg-blue-50 text-blue-600' :
+                            log.action === 'DELETE' ? 'bg-rose-50 text-rose-600' :
+                            log.action === 'VOID' ? 'bg-orange-50 text-orange-600' :
+                            'bg-slate-100 text-slate-600'
+                          }`}>
+                            {log.action}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="text-xs font-bold text-slate-700 uppercase">{log.entityType}</div>
+                          <div className="text-[9px] text-slate-400 font-mono">{log.entityId.substring(0, 8)}...</div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="text-xs text-slate-700 max-w-md">{log.description}</div>
+                        </td>
+                        <td className="px-6 py-4">
+                          {log.changes ? (
+                            <div className="text-[10px] text-slate-500 max-w-xs line-clamp-2">{log.changes}</div>
+                          ) : (
+                            <span className="text-[10px] text-slate-300 italic">-</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

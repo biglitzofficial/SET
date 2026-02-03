@@ -258,6 +258,14 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      // Blur the input to save the value
+      (e.target as HTMLInputElement).blur();
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.amount || !formData.sourceName) return;
@@ -557,7 +565,7 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
               <div className="grid grid-cols-2 gap-6">
                  <div>
                     <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Amount (₹)</label>
-                    <input data-testid="input-amount" required type="number" className="w-full border-2 border-slate-100 p-4 rounded-2xl text-2xl font-display font-black outline-none focus:border-indigo-500 bg-white" value={formData.amount || ''} onChange={e => setFormData({...formData, amount: Number(e.target.value)})} />
+                    <input data-testid="input-amount" required type="number" className="w-full border-2 border-slate-100 p-4 rounded-2xl text-2xl font-display font-black outline-none focus:border-indigo-500 bg-white [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" placeholder="Enter amount" value={formData.amount && formData.amount !== 0 ? formData.amount : ''} onChange={e => setFormData({...formData, amount: Number(e.target.value) || 0})} onKeyDown={handleKeyDown} />
                  </div>
                  <div>
                     <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Transaction Date</label>

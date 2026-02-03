@@ -71,7 +71,7 @@ const SupplierList: React.FC<SupplierListProps> = ({ suppliers, setSuppliers, pa
               </div>
               <div>
                 <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Opening Outstanding (₹)</label>
-                <input type="number" className="w-full border-2 border-slate-100 p-3 rounded-2xl bg-slate-50 text-xl font-display font-black text-rose-600 outline-none focus:border-indigo-500" value={formData.outstanding} onChange={e => setFormData({...formData, outstanding: Number(e.target.value)})} />
+                <input type="number" className="w-full border-2 border-slate-100 p-3 rounded-2xl bg-slate-50 text-xl font-display font-black text-rose-600 outline-none focus:border-indigo-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={formData.outstanding} onChange={e => setFormData({...formData, outstanding: Number(e.target.value)})} />
               </div>
               <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
                 <button type="button" onClick={() => setShowForm(false)} className="px-6 py-3 text-slate-400 font-black uppercase text-[10px] tracking-widest hover:bg-slate-50 rounded-xl">Cancel</button>

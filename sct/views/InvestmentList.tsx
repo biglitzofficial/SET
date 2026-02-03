@@ -105,6 +105,13 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
     }
   };
 
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      (e.target as HTMLInputElement).blur();
+    }
+  };
+
   // --- LEDGER SAVING LOGIC (Common for Chit & Regular) ---
   const handleLedgerSave = () => {
      if (!viewDetail) return;
@@ -552,17 +559,19 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
                      <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Amount Paid (Voucher Value)</label>
                      <input 
                         type="number" 
-                        className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 font-bold text-slate-900 outline-none focus:border-blue-500" 
-                        value={ledgerForm.amountPaid || ''} 
+                        className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 font-bold text-slate-900 outline-none focus:border-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" 
+                        placeholder="Enter amount"
+                        value={ledgerForm.amountPaid && ledgerForm.amountPaid !== 0 ? ledgerForm.amountPaid : ''} 
                         onChange={e => {
-                            const val = Number(e.target.value);
+                            const val = Number(e.target.value) || 0;
                             // Auto Calculate Dividend for Chit
                             let div = ledgerForm.dividend;
                             if (viewDetail?.type === 'CHIT_SAVINGS' && viewDetail.chitConfig) {
                                 div = Math.max(0, viewDetail.chitConfig.monthlyInstallment - val);
                             }
                             setLedgerForm({...ledgerForm, amountPaid: val, dividend: div});
-                        }} 
+                        }}
+                        onKeyDown={handleKeyDown}
                      />
                   </div>
                   
@@ -570,7 +579,7 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
                   {viewDetail?.type === 'CHIT_SAVINGS' && (
                      <div>
                         <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Dividend / Profit</label>
-                        <input type="number" className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 font-bold text-emerald-600 outline-none focus:border-blue-500" value={ledgerForm.dividend || ''} onChange={e => setLedgerForm({...ledgerForm, dividend: Number(e.target.value)})} />
+                        <input type="number" className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 font-bold text-emerald-600 outline-none focus:border-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" placeholder="Enter amount" value={ledgerForm.dividend && ledgerForm.dividend !== 0 ? ledgerForm.dividend : ''} onChange={e => setLedgerForm({...ledgerForm, dividend: Number(e.target.value) || 0})} onKeyDown={handleKeyDown} />
                         <p className="text-[8px] font-bold text-emerald-500 mt-1">* Auto-calculated (Installment - Paid)</p>
                      </div>
                   )}
@@ -603,18 +612,20 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
                      <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Bid Amount (Discount)</label>
                      <input 
                         type="number" 
-                        className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 font-bold text-slate-900 outline-none focus:border-blue-500" 
-                        value={prizeForm.bidAmount || ''} 
+                        className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 font-bold text-slate-900 outline-none focus:border-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" 
+                        placeholder="Enter bid amount"
+                        value={prizeForm.bidAmount && prizeForm.bidAmount !== 0 ? prizeForm.bidAmount : ''} 
                         onChange={e => {
-                            const bid = Number(e.target.value);
+                            const bid = Number(e.target.value) || 0;
                             const won = Math.max(0, (viewDetail?.chitConfig?.chitValue || 0) - bid);
                             setPrizeForm({...prizeForm, bidAmount: bid, amount: won});
                         }}
+                        onKeyDown={handleKeyDown}
                      />
                   </div>
                   <div>
                      <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Winning Amount (Received)</label>
-                     <input type="number" className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 font-bold text-2xl text-slate-900 outline-none focus:border-blue-500" value={prizeForm.amount || ''} onChange={e => setPrizeForm({...prizeForm, amount: Number(e.target.value)})} />
+                     <input type="number" className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 font-bold text-2xl text-slate-900 outline-none focus:border-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" placeholder="Auto-calculated" value={prizeForm.amount && prizeForm.amount !== 0 ? prizeForm.amount : ''} onChange={e => setPrizeForm({...prizeForm, amount: Number(e.target.value) || 0})} onKeyDown={handleKeyDown} />
                      <p className="text-[8px] font-bold text-slate-400 mt-1">* Auto-calculated (Chit Value - Bid)</p>
                   </div>
                   <div>
@@ -627,7 +638,7 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
                   </div>
                   <div>
                      <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Won in Month</label>
-                     <input type="number" className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 font-bold text-slate-900 outline-none focus:border-blue-500" value={prizeForm.month || ''} onChange={e => setPrizeForm({...prizeForm, month: Number(e.target.value)})} />
+                     <input type="number" className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 font-bold text-slate-900 outline-none focus:border-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" placeholder="Month number" value={prizeForm.month && prizeForm.month !== 0 ? prizeForm.month : ''} onChange={e => setPrizeForm({...prizeForm, month: Number(e.target.value) || 0})} onKeyDown={handleKeyDown} />
                   </div>
                   
                   <div className="pt-2">
@@ -669,15 +680,15 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
                     <div className="grid grid-cols-2 gap-4">
                        <div>
                           <label className="block text-[9px] font-black text-yellow-600 uppercase tracking-widest mb-1">Chit Value (Pot)</label>
-                          <input required type="number" className="w-full bg-white rounded-xl px-3 py-2 font-bold text-slate-900 outline-none border border-yellow-200 focus:border-yellow-500" value={formData.chitConfig?.chitValue || ''} onChange={e => setFormData({...formData, chitConfig: { ...formData.chitConfig!, chitValue: Number(e.target.value) }})} />
+                          <input required type="number" className="w-full bg-white rounded-xl px-3 py-2 font-bold text-slate-900 outline-none border border-yellow-200 focus:border-yellow-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" placeholder="Enter value" value={formData.chitConfig?.chitValue && formData.chitConfig.chitValue !== 0 ? formData.chitConfig.chitValue : ''} onChange={e => setFormData({...formData, chitConfig: { ...formData.chitConfig!, chitValue: Number(e.target.value) || 0 }})} onKeyDown={handleKeyDown} />
                        </div>
                        <div>
                           <label className="block text-[9px] font-black text-yellow-600 uppercase tracking-widest mb-1">Monthly Due</label>
-                          <input required type="number" className="w-full bg-white rounded-xl px-3 py-2 font-bold text-slate-900 outline-none border border-yellow-200 focus:border-yellow-500" value={formData.chitConfig?.monthlyInstallment || ''} onChange={e => setFormData({...formData, chitConfig: { ...formData.chitConfig!, monthlyInstallment: Number(e.target.value) }})} />
+                          <input required type="number" className="w-full bg-white rounded-xl px-3 py-2 font-bold text-slate-900 outline-none border border-yellow-200 focus:border-yellow-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={formData.chitConfig?.monthlyInstallment || ''} onChange={e => setFormData({...formData, chitConfig: { ...formData.chitConfig!, monthlyInstallment: Number(e.target.value) }})} />
                        </div>
                        <div>
                           <label className="block text-[9px] font-black text-yellow-600 uppercase tracking-widest mb-1">Duration (Months)</label>
-                          <input required type="number" className="w-full bg-white rounded-xl px-3 py-2 font-bold text-slate-900 outline-none border border-yellow-200 focus:border-yellow-500" value={formData.chitConfig?.durationMonths || ''} onChange={e => setFormData({...formData, chitConfig: { ...formData.chitConfig!, durationMonths: Number(e.target.value) }})} />
+                          <input required type="number" className="w-full bg-white rounded-xl px-3 py-2 font-bold text-slate-900 outline-none border border-yellow-200 focus:border-yellow-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={formData.chitConfig?.durationMonths || ''} onChange={e => setFormData({...formData, chitConfig: { ...formData.chitConfig!, durationMonths: Number(e.target.value) }})} />
                        </div>
                        <div>
                           <label className="block text-[9px] font-black text-yellow-600 uppercase tracking-widest mb-1">Start Date</label>
@@ -709,12 +720,12 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
                    <div className="grid grid-cols-2 gap-4">
                       <div>
                          <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Investment Amount (₹)</label>
-                         <input type="number" className="w-full border-2 border-slate-100 rounded-xl px-4 py-3 text-sm font-bold bg-slate-50 outline-none focus:border-blue-500" value={formData.amountInvested || ''} onChange={e => setFormData({...formData, amountInvested: Number(e.target.value)})} />
+                         <input type="number" className="w-full border-2 border-slate-100 rounded-xl px-4 py-3 text-sm font-bold bg-slate-50 outline-none focus:border-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={formData.amountInvested || ''} onChange={e => setFormData({...formData, amountInvested: Number(e.target.value)})} />
                          {formData.contributionType === 'MONTHLY' && <p className="text-[9px] font-bold text-slate-400 mt-1">* This is the monthly installment amount</p>}
                       </div>
                       <div>
                          <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Target Value (₹)</label>
-                         <input type="number" className="w-full border-2 border-slate-100 rounded-xl px-4 py-3 text-sm font-bold bg-slate-50 outline-none focus:border-blue-500" value={formData.expectedMaturityValue || ''} onChange={e => setFormData({...formData, expectedMaturityValue: Number(e.target.value)})} />
+                         <input type="number" className="w-full border-2 border-slate-100 rounded-xl px-4 py-3 text-sm font-bold bg-slate-50 outline-none focus:border-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={formData.expectedMaturityValue || ''} onChange={e => setFormData({...formData, expectedMaturityValue: Number(e.target.value)})} />
                       </div>
                    </div>
                  </>

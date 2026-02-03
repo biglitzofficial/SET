@@ -1,5 +1,5 @@
 // API Service for Backend Communication
-const API_BASE_URL = import.meta.env.PROD 
+const API_BASE_URL = import.meta.env?.PROD 
   ? 'https://sri-chendur-traders-backend-13351890542.us-central1.run.app/api'
   : 'http://localhost:5000/api';
 
@@ -199,7 +199,7 @@ export const chitAPI = {
     }),
   
   recordAuction: (id: string, auctionData: any) =>
-    apiRequest<any>(`/chit-groups/${id}/auction`, {
+    apiRequest<any>(`/chit-groups/${id}/auctions`, {
       method: 'POST',
       body: JSON.stringify(auctionData),
     }),

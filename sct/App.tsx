@@ -220,13 +220,22 @@ const Header = ({ onMenuToggle }: { onMenuToggle: () => void }) => (
 );
 
 const App: React.FC = () => {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [currentUser, setCurrentUser] = useState<StaffUser | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(() => {
+    const savedAuth = localStorage.getItem('isAuthenticated');
+    return savedAuth === 'true';
+  });
+  const [currentUser, setCurrentUser] = useState<StaffUser | null>(() => {
+    const savedUser = localStorage.getItem('currentUser');
+    return savedUser ? JSON.parse(savedUser) : null;
+  });
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [loading, setLoading] = useState(false);
 
   // Core Data State
-  const [role, setRole] = useState<UserRole>('OWNER');
+  const [role, setRole] = useState<UserRole>(() => {
+    const savedUser = localStorage.getItem('currentUser');
+    return savedUser ? JSON.parse(savedUser).role : 'OWNER';
+  });
   const [expenseCategories, setExpenseCategories] = useState(['Office Rent', 'Staff Salary', 'Transport', 'Electricity', 'Packaging']);
   const [savingCategories, setSavingCategories] = useState(['LIC', 'SIP', 'CHIT_SAVINGS', 'GOLD_SAVINGS', 'FIXED_DEPOSIT']);
   
@@ -306,12 +315,12 @@ const App: React.FC = () => {
       setChitGroups(chitGroupsData);
       setInvestments(investmentsData);
       
-      // Load settings
+      // Load settings - use saved data if available, otherwise keep current state
       if (settingsData) {
-        setExpenseCategories(settingsData.expenseCategories || expenseCategories);
-        setSavingCategories(settingsData.savingCategories || savingCategories);
-        setOtherBusinesses(settingsData.otherBusinesses || otherBusinesses);
-        setIncomeCategories(settingsData.incomeCategories || incomeCategories);
+        if (settingsData.expenseCategories) setExpenseCategories(settingsData.expenseCategories);
+        if (settingsData.savingCategories) setSavingCategories(settingsData.savingCategories);
+        if (settingsData.otherBusinesses) setOtherBusinesses(settingsData.otherBusinesses);
+        if (settingsData.incomeCategories) setIncomeCategories(settingsData.incomeCategories);
         if (settingsData.bankAccounts) setBankAccounts(settingsData.bankAccounts);
       }
 
@@ -420,11 +429,17 @@ const App: React.FC = () => {
     setCurrentUser(user);
     setRole(user.role);
     setIsAuthenticated(true);
+    // Persist to localStorage
+    localStorage.setItem('isAuthenticated', 'true');
+    localStorage.setItem('currentUser', JSON.stringify(user));
   };
 
   const handleLogout = () => {
     setIsAuthenticated(false);
     setCurrentUser(null);
+    // Clear localStorage
+    localStorage.removeItem('isAuthenticated');
+    localStorage.removeItem('currentUser');
   };
 
   if (!isAuthenticated) {
@@ -452,7 +467,7 @@ const App: React.FC = () => {
             }>
               <Routes>
                 <Route path="/" element={<Dashboard stats={stats} invoices={invoices} payments={payments} role={role} setRole={setRole} customers={customers} />} />
-                <Route path="/customers" element={<CustomerList customers={customers} setCustomers={setCustomers} invoices={invoices} payments={payments} />} />
+                <Route path="/customers" element={<CustomerList customers={customers} setCustomers={setCustomers} invoices={invoices} payments={payments} setAuditLogs={setAuditLogs} currentUser={currentUser} />} />
                 <Route path="/invoices" element={<InvoiceList 
                   invoices={invoices} setInvoices={setInvoices} 
                   customers={customers} chitGroups={chitGroups} 
