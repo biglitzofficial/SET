@@ -1,5 +1,6 @@
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Customer, Invoice, Payment, AuditLog, StaffUser } from '../types';
 import { customerAPI } from '../services/api';
 import { createAuditLog, generateChangeSummary } from '../utils/auditLogger';
@@ -17,12 +18,24 @@ type SortKey = 'name' | 'royaltyAmount' | 'interestPrincipal' | 'outstanding' | 
 type ViewType = 'ALL' | 'ROYALTY' | 'INTEREST' | 'CHIT' | 'GENERAL' | 'CREDITOR';
 
 const CustomerList: React.FC<CustomerListProps> = ({ customers, setCustomers, invoices, payments, setAuditLogs, currentUser }) => {
+  const [searchParams] = useSearchParams();
   const [showForm, setShowForm] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
   
   // Filter & Sort State
   const [search, setSearch] = useState('');
   const [activeView, setActiveView] = useState<ViewType>('ALL');
+
+  // Set initial view from URL parameter
+  useEffect(() => {
+    const filterParam = searchParams.get('filter');
+    if (filterParam) {
+      const upperFilter = filterParam.toUpperCase() as ViewType;
+      if (['ALL', 'ROYALTY', 'INTEREST', 'CHIT', 'GENERAL', 'CREDITOR'].includes(upperFilter)) {
+        setActiveView(upperFilter);
+      }
+    }
+  }, [searchParams]);
   const [sortConfig, setSortConfig] = useState<{ key: SortKey; direction: 'ASC' | 'DESC' }>({ key: 'name', direction: 'ASC' });
 
   // Form Classification State

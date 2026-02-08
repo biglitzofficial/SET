@@ -138,4 +138,106 @@ router.get('/audit-logs', authenticate, async (req, res) => {
   }
 });
 
+// Clear all data (DANGEROUS - OWNER only)
+router.delete('/clear-all-data', [
+  authenticate,
+  authorize('OWNER')
+], async (req, res) => {
+  try {
+    const { confirmationText } = req.body;
+    
+    // Require confirmation text to prevent accidental deletion
+    if (confirmationText !== 'DELETE ALL DATA') {
+      return res.status(400).json({ 
+        error: { message: 'Invalid confirmation text. Must be exactly: DELETE ALL DATA' } 
+      });
+    }
+
+    // Log this critical action BEFORE deletion
+    await db.collection(COLLECTIONS.AUDIT_LOGS).add({
+      timestamp: Date.now(),
+      action: 'CLEAR_ALL_DATA',
+      entityType: 'SYSTEM',
+      description: `User ${req.user.name} (${req.user.username}) cleared all system data`,
+      performedBy: req.user.role,
+      userId: req.user.id,
+      critical: true
+    });
+
+    // Delete collections in batch
+    const collectionsToDelete = [
+      COLLECTIONS.CUSTOMERS,
+      COLLECTIONS.INVOICES,
+      COLLECTIONS.PAYMENTS,
+      COLLECTIONS.LIABILITIES,
+      COLLECTIONS.INVESTMENTS,
+      COLLECTIONS.CHIT_GROUPS
+      // Note: NOT deleting USERS, SETTINGS, BANK_ACCOUNTS, or current AUDIT_LOGS
+    ];
+
+    let totalDeleted = 0;
+
+    for (const collectionName of collectionsToDelete) {
+      const snapshot = await db.collection(collectionName).get();
+      
+      // Delete in batches of 500 (Firestore limit)
+      const batches = [];
+      let batch = db.batch();
+      let count = 0;
+
+      snapshot.docs.forEach((doc) => {
+        batch.delete(doc.ref);
+        count++;
+        totalDeleted++;
+
+        if (count === 500) {
+          batches.push(batch.commit());
+          batch = db.batch();
+          count = 0;
+        }
+      });
+
+      // Commit remaining batch
+      if (count > 0) {
+        batches.push(batch.commit());
+      }
+
+      await Promise.all(batches);
+    }
+
+    // Log completion
+    await db.collection(COLLECTIONS.AUDIT_LOGS).add({
+      timestamp: Date.now(),
+      action: 'CLEAR_ALL_DATA_COMPLETE',
+      entityType: 'SYSTEM',
+      description: `Data clearing completed. ${totalDeleted} documents deleted`,
+      performedBy: req.user.role,
+      userId: req.user.id,
+      deletedCount: totalDeleted
+    });
+
+    res.json({ 
+      message: 'All data cleared successfully',
+      deletedCount: totalDeleted,
+      collections: collectionsToDelete
+    });
+
+  } catch (error) {
+    console.error('Clear all data error:', error);
+    
+    // Log the failure
+    await db.collection(COLLECTIONS.AUDIT_LOGS).add({
+      timestamp: Date.now(),
+      action: 'CLEAR_ALL_DATA_FAILED',
+      entityType: 'SYSTEM',
+      description: `Data clearing failed: ${error.message}`,
+      performedBy: req.user.role,
+      userId: req.user.id,
+      error: error.message
+    });
+
+    res.status(500).json({ error: { message: 'Failed to clear data' } });
+  }
+});
+
 export default router;

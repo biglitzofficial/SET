@@ -178,6 +178,12 @@ export const settingsAPI = {
   getBankAccounts: () => apiRequest<any[]>('/settings/bank-accounts'),
   
   getAuditLogs: () => apiRequest<any[]>('/settings/audit-logs'),
+  
+  clearAllData: (confirmationText: string) =>
+    apiRequest<any>('/settings/clear-all-data', {
+      method: 'DELETE',
+      body: JSON.stringify({ confirmationText }),
+    }),
 };
 
 // Chit Groups API
@@ -244,3 +250,4 @@ export const investmentAPI = {
       body: JSON.stringify(transaction),
     }),
 };
+

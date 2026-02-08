@@ -54,6 +54,11 @@ const Settings: React.FC<SettingsProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'FINANCE' | 'ACCESS' | 'DATA' | 'AUDIT'>('FINANCE');
   
+  // Clear All Data State
+  const [showClearDataModal, setShowClearDataModal] = useState(false);
+  const [clearDataConfirmation, setClearDataConfirmation] = useState('');
+  const [isClearingData, setIsClearingData] = useState(false);
+  
   // Auto-save settings to backend when categories change
   useEffect(() => {
     const saveSettings = async () => {
@@ -212,6 +217,39 @@ const Settings: React.FC<SettingsProps> = ({
       if (input) input.value = '';
     };
     reader.readAsText(file);
+  };
+
+  const handleClearAllData = async () => {
+    if (clearDataConfirmation !== 'DELETE ALL DATA') {
+      alert('Please type exactly: DELETE ALL DATA');
+      return;
+    }
+
+    if (!window.confirm('⚠️ FINAL WARNING: This will permanently delete all customers, invoices, payments, chits, loans, and investments. This action CANNOT be undone. Are you absolutely sure?')) {
+      return;
+    }
+
+    setIsClearingData(true);
+
+    try {
+      const result = await settingsAPI.clearAllData(clearDataConfirmation);
+      
+      // Clear local state
+      setCustomers([]);
+      setInvoices([]);
+      setPayments([]);
+      setChitGroups([]);
+      if (setLiabilities) setLiabilities([]);
+      if (setInvestments) setInvestments([]);
+      
+      alert(`✅ Success! All data cleared. ${result.deletedCount} records deleted. You can now start with fresh live data.`);
+      setShowClearDataModal(false);
+      setClearDataConfirmation('');
+    } catch (error: any) {
+      alert(`❌ Error: ${error.message || 'Failed to clear data'}`);
+    } finally {
+      setIsClearingData(false);
+    }
   };
 
   return (
@@ -515,7 +553,60 @@ const Settings: React.FC<SettingsProps> = ({
       {/* 4. DATA (IMPORT/EXPORT) */}
       {/* ... (Data tab remains mostly unchanged, exporting incomeCategories is handled by App.tsx logic passed down) ... */}
       {activeTab === 'DATA' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <div className="space-y-8">
+          
+          {/* CLEAR ALL DATA - DANGER ZONE */}
+          <div className="bg-gradient-to-br from-rose-50 to-rose-100 p-8 rounded-[2rem] border-2 border-rose-300 shadow-lg">
+            <div className="flex items-start gap-6">
+              <div className="w-16 h-16 rounded-2xl bg-rose-600 text-white flex items-center justify-center flex-shrink-0 shadow-xl">
+                <i className="fas fa-exclamation-triangle text-2xl"></i>
+              </div>
+              <div className="flex-1">
+                <h3 className="text-xl font-display font-black text-rose-900 uppercase italic tracking-tighter mb-2">🚨 Danger Zone: Clear All Data</h3>
+                <p className="text-sm text-rose-800 mb-4 leading-relaxed font-semibold">
+                  This will <strong className="text-rose-900">permanently delete</strong> all customers, invoices, payments, chit groups, loans, and investments from the database. 
+                  This action is <strong className="text-rose-900">irreversible</strong> and should only be used when transitioning from test data to live production data.
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                  <div className="bg-white/90 rounded-xl p-4 border border-rose-200">
+                    <h4 className="text-[10px] font-black text-rose-700 uppercase tracking-widest mb-2">⛔ Will Be Deleted:</h4>
+                    <ul className="text-xs text-rose-900 space-y-1.5 font-semibold">
+                      <li className="flex items-center gap-2"><i className="fas fa-times-circle text-rose-600"></i> All Customers ({customers.length})</li>
+                      <li className="flex items-center gap-2"><i className="fas fa-times-circle text-rose-600"></i> All Invoices ({invoices.length})</li>
+                      <li className="flex items-center gap-2"><i className="fas fa-times-circle text-rose-600"></i> All Payments ({payments.length})</li>
+                      <li className="flex items-center gap-2"><i className="fas fa-times-circle text-rose-600"></i> All Chit Groups ({chitGroups.length})</li>
+                      <li className="flex items-center gap-2"><i className="fas fa-times-circle text-rose-600"></i> All Loans ({liabilities?.length || 0})</li>
+                      <li className="flex items-center gap-2"><i className="fas fa-times-circle text-rose-600"></i> All Investments ({investments?.length || 0})</li>
+                    </ul>
+                  </div>
+                  <div className="bg-emerald-50 rounded-xl p-4 border border-emerald-300">
+                    <h4 className="text-[10px] font-black text-emerald-700 uppercase tracking-widest mb-2">✅ Will Be Preserved:</h4>
+                    <ul className="text-xs text-emerald-900 space-y-1.5 font-semibold">
+                      <li className="flex items-center gap-2"><i className="fas fa-check-circle text-emerald-600"></i> User accounts & passwords</li>
+                      <li className="flex items-center gap-2"><i className="fas fa-check-circle text-emerald-600"></i> System settings & config</li>
+                      <li className="flex items-center gap-2"><i className="fas fa-check-circle text-emerald-600"></i> Bank account settings</li>
+                      <li className="flex items-center gap-2"><i className="fas fa-check-circle text-emerald-600"></i> Audit logs (security)</li>
+                    </ul>
+                  </div>
+                </div>
+                {currentUser?.role === 'OWNER' ? (
+                  <button
+                    onClick={() => setShowClearDataModal(true)}
+                    className="px-6 py-3.5 bg-rose-600 text-white font-black uppercase text-xs tracking-widest rounded-xl hover:bg-rose-700 shadow-lg transition-all hover:shadow-xl hover:scale-105"
+                  >
+                    <i className="fas fa-trash-alt mr-2"></i>
+                    Clear All Data
+                  </button>
+                ) : (
+                  <p className="text-xs text-rose-700 font-bold italic bg-rose-200 px-4 py-2 rounded-lg inline-block">
+                    🔒 Only OWNER accounts can perform this operation
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
            {/* FULL BACKUP SECTION */}
            <div className="bg-slate-900 p-8 rounded-[2rem] text-white shadow-xl relative overflow-hidden">
               <div className="absolute top-0 right-0 p-8 opacity-10"><i className="fas fa-database text-9xl"></i></div>
@@ -558,6 +649,7 @@ const Settings: React.FC<SettingsProps> = ({
                  ))}
               </div>
            </div>
+          </div>
         </div>
       )}
 
@@ -656,6 +748,92 @@ const Settings: React.FC<SettingsProps> = ({
         </div>
       )}
 
+      {/* CLEAR ALL DATA CONFIRMATION MODAL */}
+      {showClearDataModal && (
+        <div className="fixed inset-0 bg-rose-900 bg-opacity-95 flex items-center justify-center z-[110] p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-lg animate-scaleUp overflow-hidden">
+            <div className="p-8 border-b border-rose-100 bg-rose-50 flex justify-between items-start">
+              <div>
+                <h3 className="text-xl font-display font-black text-rose-900 uppercase italic tracking-tighter">⚠️ Confirm Data Deletion</h3>
+                <p className="text-[10px] font-black text-rose-400 uppercase tracking-widest mt-1">This Cannot Be Undone</p>
+              </div>
+              <button onClick={() => { setShowClearDataModal(false); setClearDataConfirmation(''); }} className="text-rose-400 hover:text-rose-600">
+                <i className="fas fa-times text-xl"></i>
+              </button>
+            </div>
+            <div className="p-8 space-y-6">
+              <div className="bg-rose-50 border-2 border-rose-200 rounded-xl p-6">
+                <h4 className="text-sm font-black text-rose-900 mb-3">⚠️ YOU ARE ABOUT TO DELETE:</h4>
+                <ul className="space-y-2 text-sm">
+                  <li className="flex items-center gap-2 text-rose-700">
+                    <i className="fas fa-times-circle"></i>
+                    <span className="font-bold">{customers.length}</span> Customers
+                  </li>
+                  <li className="flex items-center gap-2 text-rose-700">
+                    <i className="fas fa-times-circle"></i>
+                    <span className="font-bold">{invoices.length}</span> Invoices
+                  </li>
+                  <li className="flex items-center gap-2 text-rose-700">
+                    <i className="fas fa-times-circle"></i>
+                    <span className="font-bold">{payments.length}</span> Payments
+                  </li>
+                  <li className="flex items-center gap-2 text-rose-700">
+                    <i className="fas fa-times-circle"></i>
+                    <span className="font-bold">{chitGroups.length}</span> Chit Groups
+                  </li>
+                  <li className="flex items-center gap-2 text-rose-700">
+                    <i className="fas fa-times-circle"></i>
+                    All loans and investments
+                  </li>
+                </ul>
+              </div>
+              
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+                <p className="text-xs text-amber-800">
+                  <i className="fas fa-info-circle mr-2"></i>
+                  <strong>Tip:</strong> Consider exporting a backup before proceeding.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">
+                  Type exactly: <span className="text-rose-600 font-black">DELETE ALL DATA</span>
+                </label>
+                <input
+                  type="text"
+                  value={clearDataConfirmation}
+                  onChange={(e) => setClearDataConfirmation(e.target.value)}
+                  placeholder="Type here to confirm..."
+                  className="w-full border-2 border-slate-200 rounded-xl px-4 py-3 text-sm font-bold bg-slate-50 outline-none focus:border-rose-500"
+                  disabled={isClearingData}
+                />
+              </div>
+
+              <div className="flex gap-3 pt-4">
+                <button
+                  onClick={() => { setShowClearDataModal(false); setClearDataConfirmation(''); }}
+                  className="flex-1 py-3 text-slate-600 font-black uppercase text-xs tracking-widest hover:bg-slate-100 rounded-xl transition"
+                  disabled={isClearingData}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleClearAllData}
+                  disabled={clearDataConfirmation !== 'DELETE ALL DATA' || isClearingData}
+                  className="flex-1 py-3 bg-rose-600 text-white font-black uppercase text-xs tracking-widest rounded-xl hover:bg-rose-700 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transition"
+                >
+                  {isClearingData ? (
+                    <><i className="fas fa-spinner fa-spin mr-2"></i>Deleting...</>
+                  ) : (
+                    <><i className="fas fa-trash-alt mr-2"></i>Clear All Data</>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* STAFF MODAL */}
       {showStaffForm && (
          <div className="fixed inset-0 bg-slate-900 bg-opacity-90 flex items-center justify-center z-[100] p-4 backdrop-blur-sm">
@@ -717,7 +895,7 @@ const Settings: React.FC<SettingsProps> = ({
             </div>
          </div>
       )}
-      
+
       {showImportModal && (
         <div className="fixed inset-0 bg-slate-900 bg-opacity-90 flex items-center justify-center z-[100] p-4 backdrop-blur-sm">
            <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-lg animate-scaleUp overflow-hidden">

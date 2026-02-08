@@ -1,5 +1,6 @@
 
 import React, { useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { DashboardStats, Invoice, Payment, UserRole, Customer } from '../types';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
 
@@ -13,6 +14,7 @@ interface DashboardProps {
 }
 
 const Dashboard: React.FC<DashboardProps> = ({ stats, customers, role, invoices }) => {
+  const navigate = useNavigate();
   const formatCurrency = (val: number) => `${Math.abs(val || 0).toFixed(2)} INR`;
 
   // --- Real-time Projections ---
@@ -156,12 +158,12 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, customers, role, invoices 
            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               {/* ROYALTY */}
               <div className="space-y-2">
-                <div className="p-3 bg-blue-50 rounded-2xl border border-blue-100 overflow-hidden">
+                <div onClick={() => navigate('/customers?filter=royalty')} className="p-3 bg-blue-50 rounded-2xl border border-blue-100 overflow-hidden cursor-pointer hover:shadow-lg hover:scale-105 transition-all duration-200">
                    <div className="text-[10px] font-bold text-blue-400 uppercase mb-1 tracking-wider">ROYALTY</div>
                    <div className="text-sm sm:text-base font-bold text-blue-900 whitespace-nowrap">{formatCurrency(projections.royaltyReceivable)}</div>
                    <div className="text-[9px] text-blue-400 uppercase tracking-widest mt-0.5">Receivable</div>
                 </div>
-                <div className="p-3 bg-blue-50 rounded-2xl border border-blue-100 overflow-hidden">
+                <div onClick={() => navigate('/customers?filter=royalty')} className="p-3 bg-blue-50 rounded-2xl border border-blue-100 overflow-hidden cursor-pointer hover:shadow-lg hover:scale-105 transition-all duration-200">
                    <div className="text-sm sm:text-base font-bold text-blue-900 whitespace-nowrap">{formatCurrency(projections.royaltyPayable)}</div>
                    <div className="text-[9px] text-blue-400 uppercase tracking-widest">Payable</div>
                 </div>
@@ -169,12 +171,12 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, customers, role, invoices 
 
               {/* LOAN */}
               <div className="space-y-2">
-                <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 overflow-hidden">
+                <div onClick={() => navigate('/customers?filter=interest')} className="p-3 bg-slate-50 rounded-2xl border border-slate-200 overflow-hidden cursor-pointer hover:shadow-lg hover:scale-105 transition-all duration-200">
                    <div className="text-[10px] font-bold text-slate-400 uppercase mb-1 tracking-wider">LOAN</div>
                    <div className="text-sm sm:text-base font-bold text-slate-800 whitespace-nowrap">{formatCurrency(projections.loanReceivable)}</div>
                    <div className="text-[9px] text-slate-400 uppercase tracking-widest mt-0.5">Receivable</div>
                 </div>
-                <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 overflow-hidden">
+                <div onClick={() => navigate('/customers?filter=creditor')} className="p-3 bg-slate-50 rounded-2xl border border-slate-200 overflow-hidden cursor-pointer hover:shadow-lg hover:scale-105 transition-all duration-200">
                    <div className="text-sm sm:text-base font-bold text-slate-800 whitespace-nowrap">{formatCurrency(projections.loanPayable)}</div>
                    <div className="text-[9px] text-slate-400 uppercase tracking-widest">Payable</div>
                 </div>
@@ -182,12 +184,12 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, customers, role, invoices 
 
               {/* CHIT */}
               <div className="space-y-2">
-                <div className="p-3 bg-orange-50 rounded-2xl border border-orange-100 overflow-hidden">
+                <div onClick={() => navigate('/customers?filter=chit')} className="p-3 bg-orange-50 rounded-2xl border border-orange-100 overflow-hidden cursor-pointer hover:shadow-lg hover:scale-105 transition-all duration-200">
                    <div className="text-[10px] font-bold text-orange-400 uppercase mb-1 tracking-wider">CHIT</div>
                    <div className="text-sm sm:text-base font-bold text-orange-900 whitespace-nowrap">{formatCurrency(projections.chitReceivable)}</div>
                    <div className="text-[9px] text-orange-400 uppercase tracking-widest mt-0.5">Receivable</div>
                 </div>
-                <div className="p-3 bg-orange-50 rounded-2xl border border-orange-100 overflow-hidden">
+                <div onClick={() => navigate('/customers?filter=chit')} className="p-3 bg-orange-50 rounded-2xl border border-orange-100 overflow-hidden cursor-pointer hover:shadow-lg hover:scale-105 transition-all duration-200">
                    <div className="text-sm sm:text-base font-bold text-orange-900 whitespace-nowrap">{formatCurrency(projections.chitPayable)}</div>
                    <div className="text-[9px] text-orange-400 uppercase tracking-widest">Payable</div>
                 </div>
@@ -195,12 +197,12 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, customers, role, invoices 
 
               {/* GENERAL */}
               <div className="space-y-2">
-                <div className="p-3 bg-amber-50 rounded-2xl border border-amber-100 overflow-hidden">
+                <div onClick={() => navigate('/customers?filter=general')} className="p-3 bg-amber-50 rounded-2xl border border-amber-100 overflow-hidden cursor-pointer hover:shadow-lg hover:scale-105 transition-all duration-200">
                    <div className="text-[10px] font-bold text-amber-500 uppercase mb-1 tracking-wider">OTHER</div>
                    <div className="text-sm sm:text-base font-bold text-amber-900 whitespace-nowrap">{formatCurrency(projections.generalReceivable)}</div>
                    <div className="text-[9px] text-amber-500 uppercase tracking-widest mt-0.5">Receivable</div>
                 </div>
-                <div className="p-3 bg-amber-50 rounded-2xl border border-amber-100 overflow-hidden">
+                <div onClick={() => navigate('/customers?filter=general')} className="p-3 bg-amber-50 rounded-2xl border border-amber-100 overflow-hidden cursor-pointer hover:shadow-lg hover:scale-105 transition-all duration-200">
                    <div className="text-sm sm:text-base font-bold text-amber-900 whitespace-nowrap">{formatCurrency(projections.generalPayable)}</div>
                    <div className="text-[9px] text-amber-500 uppercase tracking-widest">Payable</div>
                 </div>
