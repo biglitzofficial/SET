@@ -1,7 +1,7 @@
 
 import React, { useState, useMemo } from 'react';
 import { Payment, Customer, Invoice, UserRole, AuditLog, Liability, Investment, InvestmentTransaction, StaffUser, BankAccount } from '../types';
-import { paymentAPI } from '../services/api';
+import { paymentAPI, invoiceAPI } from '../services/api';
 
 interface AccountsManagerProps {
   payments: Payment[];
@@ -201,6 +201,51 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
 
   // REVERSAL LOGIC
   const reverseSideEffects = (payment: Payment) => {
+    // 0. Restore invoice balances (ROYALTY / INTEREST / CHIT / GENERAL receipts)
+    if (['ROYALTY', 'INTEREST', 'CHIT', 'GENERAL'].includes(payment.category) && payment.type === 'IN' && payment.sourceId) {
+      const typeMap: Record<string, string[]> = {
+        'ROYALTY': ['ROYALTY'],
+        'INTEREST': ['INTEREST'],
+        'CHIT': ['CHIT'],
+        'GENERAL': ['ROYALTY', 'INTEREST', 'CHIT'],
+      };
+      const matchTypes = typeMap[payment.category] || [];
+      let remaining = payment.amount;
+
+      // Re-add the amount back to invoices that were reduced (LIFO - most recently settled first, i.e. newest paid/partial first)
+      const customerInvoices = invoices
+        .filter(inv =>
+          inv.customerId === payment.sourceId &&
+          !inv.isVoid &&
+          inv.balance < inv.amount && // only invoices with some amount paid off
+          matchTypes.includes(inv.type)
+        )
+        .sort((a, b) => b.date - a.date); // Newest first (reverse FIFO)
+
+      const invoicesToRestore: typeof invoices = [];
+      for (const inv of customerInvoices) {
+        if (remaining <= 0) break;
+        const restore = Math.min(remaining, inv.amount - inv.balance);
+        const newBalance = inv.balance + restore;
+        const newStatus = newBalance >= inv.amount ? 'UNPAID' : 'PARTIAL';
+        remaining -= restore;
+        invoicesToRestore.push({ ...inv, balance: newBalance, status: newStatus as any });
+      }
+
+      if (invoicesToRestore.length > 0) {
+        setInvoices(prev =>
+          prev.map(inv => {
+            const restored = invoicesToRestore.find(u => u.id === inv.id);
+            return restored || inv;
+          })
+        );
+        for (const inv of invoicesToRestore) {
+          invoiceAPI.update(inv.id, { balance: inv.balance, status: inv.status, updatedAt: Date.now() })
+            .catch(e => console.error('Invoice balance restore failed:', e));
+        }
+      }
+    }
+
     // 1. Reverse Principal Recovery (Add back to Asset)
     if (payment.category === 'PRINCIPAL_RECOVERY') {
        setCustomers(prev => prev.map(c => c.id === payment.sourceId ? { ...c, interestPrincipal: c.interestPrincipal + payment.amount } : c));
@@ -404,6 +449,54 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
                 setInvestments(prev => prev.map(inv => inv.id === newPayment.sourceId ? { ...inv, amountInvested: inv.amountInvested + newPayment.amount } : inv));
             }
         }
+    }
+
+    // --- ALLOCATE PAYMENT AGAINST INVOICE BALANCES (ROYALTY / INTEREST / CHIT / GENERAL) ---
+    // This is the core ledger logic: a receipt reduces the matching unpaid invoices (FIFO - oldest first)
+    if (['ROYALTY', 'INTEREST', 'CHIT', 'GENERAL'].includes(purpose) && direction === 'IN' && newPayment.sourceId) {
+      const typeMap: Record<string, string[]> = {
+        'ROYALTY': ['ROYALTY'],
+        'INTEREST': ['INTEREST'],
+        'CHIT': ['CHIT'],
+        'GENERAL': ['ROYALTY', 'INTEREST', 'CHIT'],
+      };
+      const matchTypes = typeMap[purpose] || [];
+      let remaining = newPayment.amount;
+
+      // Find matching unpaid invoices for this customer, oldest first
+      const customerInvoices = invoices
+        .filter(inv =>
+          inv.customerId === newPayment.sourceId &&
+          !inv.isVoid &&
+          inv.balance > 0 &&
+          matchTypes.includes(inv.type)
+        )
+        .sort((a, b) => a.date - b.date); // FIFO
+
+      const invoicesToUpdate: typeof invoices = [];
+      for (const inv of customerInvoices) {
+        if (remaining <= 0) break;
+        const deduct = Math.min(remaining, inv.balance);
+        const newBalance = Math.max(0, inv.balance - deduct);
+        const newStatus = newBalance <= 0 ? 'PAID' : 'PARTIAL';
+        remaining -= deduct;
+        invoicesToUpdate.push({ ...inv, balance: newBalance, status: newStatus as any });
+      }
+
+      if (invoicesToUpdate.length > 0) {
+        // Update UI immediately
+        setInvoices(prev =>
+          prev.map(inv => {
+            const updated = invoicesToUpdate.find(u => u.id === inv.id);
+            return updated || inv;
+          })
+        );
+        // Persist to backend (non-blocking)
+        for (const inv of invoicesToUpdate) {
+          invoiceAPI.update(inv.id, { balance: inv.balance, status: inv.status, updatedAt: Date.now() })
+            .catch(e => console.error('Invoice balance update failed:', e));
+        }
+      }
     }
 
     // --- UPDATE WALLET BALANCES ---

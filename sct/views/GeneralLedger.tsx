@@ -14,8 +14,8 @@ const GeneralLedger: React.FC<GeneralLedgerProps> = ({ payments, openingBalances
 
   const selectedBankName = useMemo(() => {
     if (selectedBook === 'CASH') return 'Cash Drawer';
-    const bank = bankAccounts.find(b => b.id === selectedBook);
-    return bank ? bank.name : 'Unknown Account';
+    const bank = bankAccounts.find(b => b.name === selectedBook);
+    return bank ? bank.name : selectedBook;
   }, [selectedBook, bankAccounts]);
 
   const ledgerData = useMemo(() => {
@@ -25,7 +25,8 @@ const GeneralLedger: React.FC<GeneralLedgerProps> = ({ payments, openingBalances
     if (selectedBook === 'CASH') {
         opening = openingBalances.CASH;
     } else {
-        const bank = bankAccounts.find(b => b.id === selectedBook);
+        // selectedBook is the bank's name (same value stored in payment.mode)
+        const bank = bankAccounts.find(b => b.name === selectedBook);
         opening = bank ? bank.openingBalance : 0;
     }
 
@@ -77,9 +78,9 @@ const GeneralLedger: React.FC<GeneralLedgerProps> = ({ payments, openingBalances
             {bankAccounts.map(bank => (
                 <button 
                     key={bank.id} 
-                    onClick={() => setSelectedBook(bank.id)} 
+                    onClick={() => setSelectedBook(bank.name)} 
                     className={`px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest border-2 transition-all whitespace-nowrap ${
-                    selectedBook === bank.id 
+                    selectedBook === bank.name 
                         ? 'bg-slate-900 text-white border-slate-900 shadow-lg' 
                         : 'bg-white text-slate-400 border-slate-200 hover:border-slate-300'
                     }`}
