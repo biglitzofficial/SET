@@ -153,19 +153,26 @@ const CustomerList: React.FC<CustomerListProps> = ({ customers, setCustomers, in
 
     try {
       await customerAPI.delete(customer.id);
-      setCustomers(prev => prev.filter(c => c.id !== customer.id));
-      if (setAuditLogs) {
-        setAuditLogs(prev => [createAuditLog({
-          action: 'DELETE',
-          entityType: 'CUSTOMER',
-          entityId: customer.id,
-          description: `Deleted customer: ${customer.name}`,
-          currentUser,
-          oldData: customer
-        }), ...prev]);
-      }
     } catch (error: any) {
-      alert(`Failed to delete customer: ${error?.message || 'Please try again.'}`);
+      // 404 means the customer doesn't exist in the database anyway —
+      // still remove it from the UI so stale entries can be cleaned up.
+      if (!error?.message?.toLowerCase().includes('not found') && !error?.message?.includes('404')) {
+        alert(`Failed to delete customer: ${error?.message || 'Please try again.'}`);
+        return;
+      }
+    }
+
+    // Remove from UI state (whether delete succeeded or was already gone)
+    setCustomers(prev => prev.filter(c => c.id !== customer.id));
+    if (setAuditLogs) {
+      setAuditLogs(prev => [createAuditLog({
+        action: 'DELETE',
+        entityType: 'CUSTOMER',
+        entityId: customer.id,
+        description: `Deleted customer: ${customer.name}`,
+        currentUser,
+        oldData: customer
+      }), ...prev]);
     }
   };
 
