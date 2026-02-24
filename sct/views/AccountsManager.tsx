@@ -174,6 +174,9 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
       // OUTGOING
       if (purpose === 'EXPENSE') {
         pool = expenseCategories.map(c => ({ id: c, name: c, partyType: 'EXPENSE_CAT' }));
+      } else if (purpose === 'GENERAL') {
+        // General out-payment to a customer (refunds, advances, etc.)
+        pool = customers.filter(c => c.status === 'ACTIVE');
       } else if (purpose === 'LOAN_REPAYMENT' || purpose === 'LOAN_INTEREST') {
         pool = liabilities.filter(l => l.status === 'ACTIVE').map(l => ({ ...l, name: l.providerName, partyType: 'LIABILITY' }));
       } else if (purpose === 'OTHER_BUSINESS') {
@@ -189,7 +192,11 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
       return pool
         .filter(p => p.name.toLowerCase().includes(search))
         .map(p => {
-             const pType = p.partyType || (purpose === 'EXPENSE' ? 'EXPENSE_CAT' : 'LIABILITY');
+             const pType = p.partyType || (
+               purpose === 'EXPENSE' ? 'EXPENSE_CAT' :
+               purpose === 'GENERAL' ? 'CUSTOMER' :
+               'LIABILITY'
+             );
              return {
                  ...p,
                  partyType: pType,
@@ -549,11 +556,9 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
       } else {
         const response = await paymentAPI.create(newPayment);
         console.log('Create API response:', response);
-        setPayments(prev => {
-          const updated = [newPayment, ...prev];
-          console.log('Adding payment to local state. New length:', updated.length);
-          return updated;
-        });
+        // IMPORTANT: use the server-assigned Firestore ID so deletes work later
+        const savedPayment: Payment = { ...newPayment, id: response.id || newPayment.id };
+        setPayments(prev => [savedPayment, ...prev]);
       }
       
       // Reset Form
@@ -621,6 +626,7 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
                    </>
                  ) : (
                    <>
+                     <button onClick={() => { setPurpose('GENERAL'); setAccountSearch(''); }} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'GENERAL' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 text-slate-500 bg-white'}`}>General / Party</button>
                      <button onClick={() => { setPurpose('EXPENSE'); setAccountSearch(''); }} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'EXPENSE' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 text-slate-500 bg-white'}`}>Op. Expense</button>
                      <button onClick={() => { setPurpose('OTHER_BUSINESS'); setAccountSearch(''); }} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'OTHER_BUSINESS' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 text-slate-500 bg-white'}`}>Business Unit</button>
                      <button onClick={() => { setPurpose('LOAN_INTEREST'); setAccountSearch(''); }} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'LOAN_INTEREST' ? 'border-rose-500 bg-rose-50 text-rose-700' : 'border-slate-200 text-slate-500 bg-white'}`}>Debt Interest</button>
