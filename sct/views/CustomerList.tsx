@@ -148,6 +148,27 @@ const CustomerList: React.FC<CustomerListProps> = ({ customers, setCustomers, in
     setShowForm(true);
   };
 
+  const handleDeleteCustomer = async (customer: Customer) => {
+    if (!window.confirm(`Delete "${customer.name}" from the registry?\n\nThis cannot be undone.`)) return;
+
+    try {
+      await customerAPI.delete(customer.id);
+      setCustomers(prev => prev.filter(c => c.id !== customer.id));
+      if (setAuditLogs) {
+        setAuditLogs(prev => [createAuditLog({
+          action: 'DELETE',
+          entityType: 'CUSTOMER',
+          entityId: customer.id,
+          description: `Deleted customer: ${customer.name}`,
+          currentUser,
+          oldData: customer
+        }), ...prev]);
+      }
+    } catch (error: any) {
+      alert(`Failed to delete customer: ${error?.message || 'Please try again.'}`);
+    }
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
       e.preventDefault();
@@ -471,13 +492,22 @@ const CustomerList: React.FC<CustomerListProps> = ({ customers, setCustomers, in
                   </td>
                   
                   <td className="px-6 py-5 whitespace-nowrap text-right" onClick={(e) => e.stopPropagation()}>
-                     <button 
-                       onClick={() => handleOpenForm(customer)} 
-                       className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all duration-200"
-                       title="Edit customer"
-                     >
-                       <i className="fas fa-pen"></i>
-                     </button>
+                     <div className="flex items-center justify-end gap-1">
+                       <button 
+                         onClick={() => handleOpenForm(customer)} 
+                         className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all duration-200"
+                         title="Edit customer"
+                       >
+                         <i className="fas fa-pen"></i>
+                       </button>
+                       <button 
+                         onClick={() => handleDeleteCustomer(customer)} 
+                         className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all duration-200"
+                         title="Delete customer"
+                       >
+                         <i className="fas fa-trash"></i>
+                       </button>
+                     </div>
                   </td>
                 </tr>
               );
