@@ -61,9 +61,7 @@ const Sidebar = ({ role, onLogout, user }: { role: UserRole, onLogout: () => voi
       {/* Brand */}
       <div className="h-28 flex flex-col justify-center px-8 relative z-10">
         <div className="flex items-center gap-3 mb-1">
-           <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center shadow-lg">
-             <i className="fas fa-bolt text-white text-sm"></i>
-           </div>
+           <img src="/logo.png" alt="Sri Chendur Traders" className="w-10 h-10 rounded-lg object-contain bg-white p-0.5 shadow-lg" />
            <span className="text-white font-display font-bold text-xl tracking-tight">Sri Chendur</span>
         </div>
         <div className="text-[10px] text-slate-400 font-medium tracking-[0.2em] pl-11 uppercase">Finance OS</div>
@@ -141,9 +139,7 @@ const MobileMenu = ({ isOpen, onClose, role, onLogout, user }: any) => {
            {/* Header */}
            <div className="flex justify-between items-center mb-8">
               <div className="flex items-center gap-3">
-                <div className="h-10 w-10 bg-brand-500 rounded-xl flex items-center justify-center">
-                  <i className="fas fa-bolt text-white"></i>
-                </div>
+                <img src="/logo.png" alt="Sri Chendur Traders" className="h-10 w-10 rounded-xl object-contain bg-white p-0.5 shadow-lg" />
                 <span className="text-white font-bold text-lg">Menu</span>
               </div>
               <button onClick={onClose} className="text-slate-400 hover:text-white transition">
