@@ -27,6 +27,10 @@ steps:
       - "--platform"
       - "managed"
       - "--allow-unauthenticated"
+      - "--set-env-vars"
+      - "NODE_ENV=production"
+      # Sensitive vars (JWT_SECRET, SENDGRID_API_KEY, CLIENT_URL) must be set
+      # in Cloud Run console under "Edit & Deploy" > "Variables & Secrets"
 
 images:
   - "gcr.io/$PROJECT_ID/sri-chendur-traders-backend:$SHORT_SHA"

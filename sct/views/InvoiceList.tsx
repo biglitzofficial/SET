@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { Invoice, Customer, InvoiceType, ChitGroup, Liability, AuditLog, UserRole, ChitAuction, StaffUser } from '../types';
-import { invoiceAPI, chitAPI } from '../services/api';
+import { invoiceAPI, chitAPI, dueDatesAPI } from '../services/api';
 
 interface InvoiceListProps {
   invoices: Invoice[];
@@ -19,14 +19,18 @@ type BatchType = 'ROYALTY' | 'INTEREST' | 'CHIT' | 'INTEREST_OUT';
 
 const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, customers, chitGroups, setChitGroups, liabilities, role, setAuditLogs, currentUser }) => {
   
+  const [fetchError, setFetchError] = useState<string | null>(null);
+
   // Load invoices from backend
   useEffect(() => {
     const loadInvoices = async () => {
       try {
+        setFetchError(null);
         const data = await invoiceAPI.getAll();
         setInvoices(data);
-      } catch (error) {
+      } catch (error: any) {
         console.error('Failed to load invoices:', error);
+        setFetchError(error?.message || 'Failed to load billing records. Please refresh the page.');
       }
     };
     loadInvoices();
@@ -43,6 +47,12 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
   const [chitWinnerId, setChitWinnerId] = useState<string>('');
   
   const [billingDate, setBillingDate] = useState(() => new Date().toISOString().substr(0, 10));
+  const [dueDate, setDueDate] = useState(() => {
+    // Default to 3 days from today
+    const date = new Date();
+    date.setDate(date.getDate() + 3);
+    return date.toISOString().substr(0, 10);
+  });
   const [search, setSearch] = useState('');
 
   // DATE FILTER STATE
@@ -139,7 +149,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
   };
 
   // --- BATCH GENERATOR LOGIC ---
-  const generatePreviewBatch = () => {
+  const generatePreviewBatch = async () => {
     if (!activeBatchType) return;
     
     const date = new Date(billingDate).getTime();
@@ -152,7 +162,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
         const amount = cust.royaltyAmount;
         if (amount > 0) {
           batch.push({
-            id: Math.random().toString(36).substr(2, 9),
+            id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
             invoiceNumber: getNextInvoiceNumber('ROYALTY', date, batch),
             customerId: cust.id,
             customerName: cust.name,
@@ -173,7 +183,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
         const amount = cust.interestPrincipal * (cust.interestRate / 100);
         if (amount > 0) {
           batch.push({
-            id: Math.random().toString(36).substr(2, 9),
+            id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
             invoiceNumber: getNextInvoiceNumber('INTEREST', date, batch),
             customerId: cust.id,
             customerName: cust.name,
@@ -195,7 +205,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
         const amount = lender.principal * (lender.interestRate / 100);
         if (amount > 0) {
           batch.push({
-            id: Math.random().toString(36).substr(2, 9),
+            id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
             invoiceNumber: getNextInvoiceNumber('INTEREST_OUT', date, batch),
             lenderId: lender.id,
             customerName: lender.providerName,
@@ -216,7 +226,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
          const amount = creditor.creditPrincipal * (creditor.interestRate / 100);
          if (amount > 0) {
             batch.push({
-               id: Math.random().toString(36).substr(2, 9),
+               id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
                invoiceNumber: getNextInvoiceNumber('INTEREST_OUT', date, batch),
                customerId: creditor.id, // Use customerId so it maps to their ledger
                customerName: creditor.name,
@@ -237,6 +247,46 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
       if (!group || !chitWinnerId || !chitCalc || chitCalc.error) { 
         alert("Please select a group and valid winner first."); 
         return; 
+      }
+      
+      // Verify the chit group exists in the backend
+      console.log('Validating chit group exists in backend:', group.id);
+      try {
+        await chitAPI.getById(group.id);
+        console.log('Chit group validation successful:', group.id);
+      } catch (error: any) {
+        console.error('Chit group validation failed:', error);
+        alert(`❌ Error: The chit group "${group.name}" no longer exists in the database.\n\nThis might happen if:\n• The group was deleted\n• You're viewing cached data\n\nRefreshing available chit groups now...`);
+        
+        // Reload chit groups from backend
+        try {
+          console.log('Reloading chit groups from backend...');
+          const chitGroupsData = await chitAPI.getAll();
+          console.log('Reloaded chit groups (RAW):', chitGroupsData);
+          console.log('Reloaded chit groups:', chitGroupsData.map(g => ({ id: g.id, name: g.name, status: g.status })));
+          setChitGroups(chitGroupsData);
+          
+          // Reset selection so dropdown shows empty
+          setSelectedChitForBilling('');
+          setChitWinnerId('');
+          setChitBidAmount(0);
+          
+          if (chitGroupsData.length === 0) {
+            alert('⚠️ No chit groups found in the database. Please create a chit group first.');
+          } else {
+            const activeGroups = chitGroupsData.filter(g => g.status === 'ACTIVE');
+            if (activeGroups.length === 0) {
+              alert(`⚠️ Found ${chitGroupsData.length} chit group(s), but none are ACTIVE.\n\nPlease activate a chit group in the Chits page.`);
+            } else {
+              const groupNames = activeGroups.map(g => g.name).join(', ');
+              alert(`✅ Loaded ${activeGroups.length} ACTIVE chit group(s): ${groupNames}\n\nPlease select one from the dropdown and try again.`);
+            }
+          }
+        } catch (e) {
+          console.error('Failed to reload chit groups:', e);
+          alert('❌ Failed to reload chit groups from the database. Please refresh the page and try again.');
+        }
+        return;
       }
 
       // STRICT VALIDATION
@@ -264,7 +314,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
         if (cust) {
           const seatAmount = Math.round(chitCalc.netPayable);
           batch.push({
-            id: Math.random().toString(36).substr(2, 9),
+            id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
             invoiceNumber: getNextInvoiceNumber('CHIT', date, batch),
             customerId: mid,
             customerName: cust.name,
@@ -282,7 +332,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
       // B. Create PAYOUT VOUCHER (Payable) for the Winner
       const winnerName = customers.find(c => c.id === chitWinnerId)?.name || 'Winner';
       batch.push({
-        id: Math.random().toString(36).substr(2, 9),
+        id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
         invoiceNumber: getNextInvoiceNumber('CHIT', date, batch, 'PAYOUT'),
         customerId: chitWinnerId,
         customerName: winnerName,
@@ -311,50 +361,125 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
       // FOR CHIT: Generate a unique Auction ID and tag all invoices
       if (activeBatchType === 'CHIT' && selectedChitForBilling) {
         const group = chitGroups.find(g => g.id === selectedChitForBilling);
-        if (group) {
-          const newAuctionId = Math.random().toString(36).substr(2, 9);
-          const nextSeqMonth = group.auctions.length + 1;
+        
+        if (!group) {
+          console.error('Chit group not found in local state:', selectedChitForBilling);
+          console.log('Available chit groups:', chitGroups.map(g => ({ id: g.id, name: g.name })));
+          alert(`Error: Chit group not found (ID: ${selectedChitForBilling}). Please refresh the page and try again.`);
+          return;
+        }
+        
+        const newAuctionId = Math.random().toString(36).substr(2, 9);
+        const nextSeqMonth = group.auctions.length + 1;
+        
+        // Tag Invoices with Auction ID for Cascade Delete
+        finalBatch = finalBatch.map(inv => ({ ...inv, relatedAuctionId: newAuctionId }));
+
+        const newAuction: ChitAuction = {
+           id: newAuctionId,
+           month: nextSeqMonth,
+           winnerId: chitWinnerId,
+           winnerName: customers.find(c => c.id === chitWinnerId)?.name || 'Unknown',
+           bidAmount: chitBidAmount,
+           winnerHand: group.totalValue - chitBidAmount,
+           commissionAmount: chitCalc?.commission || 0,
+           dividendPerMember: chitCalc?.dividendPerMember || 0,
+           date: new Date(billingDate).getTime()
+        };
+        
+        console.log('Recording chit auction:', { groupId: group.id, auction: newAuction });
+
+        try {
+          // Update chit group with auction data via API
+          await chitAPI.recordAuction(group.id, newAuction);
           
-          // Tag Invoices with Auction ID for Cascade Delete
-          finalBatch = finalBatch.map(inv => ({ ...inv, relatedAuctionId: newAuctionId }));
-
-          const newAuction: ChitAuction = {
-             id: newAuctionId,
-             month: nextSeqMonth,
-             winnerId: chitWinnerId,
-             winnerName: customers.find(c => c.id === chitWinnerId)?.name || 'Unknown',
-             bidAmount: chitBidAmount,
-             winnerHand: group.totalValue - chitBidAmount,
-             commissionAmount: chitCalc?.commission || 0,
-             dividendPerMember: chitCalc?.dividendPerMember || 0,
-             date: new Date(billingDate).getTime()
-          };
-
-          try {
-            // Update chit group with auction data via API
-            await chitAPI.recordAuction(group.id, newAuction);
-            
-            const updatedAuctions = [...group.auctions, newAuction];
-            setChitGroups(prev => prev.map(g => g.id === group.id ? { 
-               ...g, 
-               auctions: updatedAuctions,
-               currentMonth: updatedAuctions.length + 1
-            } : g));
-          } catch (error) {
-            console.error('Failed to record chit auction:', error);
-            alert('Failed to record chit auction. Please try again.');
-            return;
-          }
+          const updatedAuctions = [...group.auctions, newAuction];
+          setChitGroups(prev => prev.map(g => g.id === group.id ? { 
+             ...g, 
+             auctions: updatedAuctions,
+             currentMonth: updatedAuctions.length + 1
+          } : g));
+          
+          console.log('Chit auction recorded successfully');
+        } catch (error: any) {
+          console.error('Failed to record chit auction:', error);
+          console.error('Error details:', error.message);
+          alert(`Failed to record chit auction: ${error.message}. Please make sure the chit group exists and try again.`);
+          return;
         }
       }
 
       try {
-        // Save all invoices to backend
-        const createdInvoices = await Promise.all(
-          finalBatch.map(invoice => invoiceAPI.create(invoice))
-        );
+        // Save all invoices to backend sequentially to avoid rate limiting
+        const createdInvoices: Invoice[] = [];
+        
+        for (let i = 0; i < finalBatch.length; i++) {
+          const invoice = finalBatch[i];
+          const createdInvoice = await invoiceAPI.create(invoice);
+          createdInvoices.push(createdInvoice);
+          
+          // Small delay between each invoice to avoid rate limiting
+          if (i < finalBatch.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+        }
         
         setInvoices(prev => [...prev, ...createdInvoices]);
+        
+        // Set due dates to the selected due date for all created invoices
+        const dueDateTimestamp = new Date(dueDate).getTime();
+        console.log(`Setting due dates for ${createdInvoices.length} invoices. Due date:`, new Date(dueDateTimestamp).toLocaleString());
+        
+        for (let i = 0; i < createdInvoices.length; i++) {
+          const invoice = createdInvoices[i];
+          
+          if (!invoice.customerId) {
+            console.warn(`Invoice ${invoice.id} has no customerId, skipping due date`);
+            continue;
+          }
+          
+          // Map invoice type to category for due dates
+          let category = 'ALL';
+          if (invoice.type === 'ROYALTY') category = 'ROYALTY';
+          else if (invoice.type === 'INTEREST') category = 'INTEREST';
+          else if (invoice.type === 'INTEREST_OUT') category = 'INTEREST_OUT';
+          else if (invoice.type === 'CHIT') category = 'CHIT';
+          
+          console.log(`Setting due date for invoice ${invoice.id}, customer: ${invoice.customerId}, type: ${invoice.type}, category: ${category}, amount: ${invoice.balance}`);
+          
+          try {
+            // Save category-specific due date
+            const categoryDueDateData = {
+              id: invoice.customerId,
+              category: category,
+              dueDate: dueDateTimestamp,
+              amount: invoice.balance
+            };
+            console.log('Sending category due date data:', categoryDueDateData);
+            await dueDatesAPI.upsert(categoryDueDateData);
+            
+            // Also save a general 'ALL' due date for Outstanding Tracker
+            const allDueDateData = {
+              id: invoice.customerId,
+              category: 'ALL',
+              dueDate: dueDateTimestamp,
+              amount: invoice.balance
+            };
+            await dueDatesAPI.upsert(allDueDateData);
+            
+            console.log(`Due dates saved successfully for ${invoice.customerName} in ${category} and ALL`);
+          } catch (err: any) {
+            console.error(`Failed to set due date for invoice ${invoice.id}:`, err);
+            console.error('Error message:', err.message);
+            // Don't block on due date failures
+          }
+          
+          if (i < createdInvoices.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 150));
+          }
+        }
+        
+        console.log('All due dates processed');
         closeModal();
       } catch (error) {
         console.error('Failed to create invoices:', error);
@@ -414,6 +539,30 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
 
   return (
     <div className="space-y-8 animate-fadeIn pb-12">
+      {/* Error banner — shown when invoice data failed to load */}
+      {fetchError && (
+        <div className="bg-rose-50 border border-rose-200 rounded-2xl px-5 py-4 flex items-start gap-3">
+          <i className="fas fa-circle-exclamation text-rose-500 mt-0.5"></i>
+          <div className="flex-1">
+            <div className="text-sm font-bold text-rose-700">Failed to load billing records</div>
+            <div className="text-xs text-rose-500 mt-0.5">{fetchError}</div>
+          </div>
+          <button
+            onClick={async () => {
+              try {
+                setFetchError(null);
+                const data = await invoiceAPI.getAll();
+                setInvoices(data);
+              } catch (err: any) {
+                setFetchError(err?.message || 'Still failing. Please refresh the page.');
+              }
+            }}
+            className="text-xs font-bold text-rose-600 hover:text-rose-800 underline whitespace-nowrap"
+          >
+            Retry
+          </button>
+        </div>
+      )}
       {/* HEADER SECTION */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-6">
          <div>
@@ -432,7 +581,41 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
             <button onClick={() => setActiveBatchType('INTEREST_OUT')} className="bg-action-red hover:bg-action-redHover text-white px-6 py-3 rounded-full font-black text-xs uppercase tracking-widest shadow-lg transform hover:scale-105 transition-all flex items-center gap-2">
                <i className="fas fa-arrow-trend-down text-sm"></i> Raise Interest Out
             </button>
-            <button onClick={() => setActiveBatchType('CHIT')} className="bg-action-orange hover:bg-action-orangeHover text-white px-6 py-3 rounded-full font-black text-xs uppercase tracking-widest shadow-lg transform hover:scale-105 transition-all flex items-center gap-2">
+            <button onClick={async () => {
+               // Refresh chit groups before opening modal
+               console.log('Loading chit groups from backend...');
+               try {
+                  const chitGroupsData = await chitAPI.getAll();
+                  console.log('Loaded chit groups (RAW):', chitGroupsData);
+                  console.log('Loaded chit groups:', chitGroupsData.map(g => ({ id: g.id, name: g.name, status: g.status, auctions: g.auctions?.length || 0 })));
+                  console.log('ACTIVE chit groups:', chitGroupsData.filter(g => g.status === 'ACTIVE').map(g => g.name));
+                  setChitGroups(chitGroupsData);
+                  
+                  // Reset selection to force user to pick valid group
+                  setSelectedChitForBilling('');
+                  setChitWinnerId('');
+                  setChitBidAmount(0);
+                  
+                  if (chitGroupsData.length === 0) {
+                     alert('⚠️ No chit groups found. Please create a chit group first in the Chits page.');
+                     return;
+                  }
+                  
+                  const activeCount = chitGroupsData.filter(g => g.status === 'ACTIVE').length;
+                  if (activeCount === 0) {
+                     alert(`⚠️ Found ${chitGroupsData.length} chit group(s), but none are marked as ACTIVE.\n\nPlease check the Chits page and make sure at least one group is active.`);
+                     return;
+                  }
+                  
+                  // Wait for React to update state before opening modal
+                  await new Promise(resolve => setTimeout(resolve, 100));
+               } catch (error) {
+                  console.error('Failed to load chit groups:', error);
+                  alert('❌ Failed to load chit groups from the database. Please check your connection and try again.');
+                  return;
+               }
+               setActiveBatchType('CHIT');
+            }} className="bg-action-orange hover:bg-action-orangeHover text-white px-6 py-3 rounded-full font-black text-xs uppercase tracking-widest shadow-lg transform hover:scale-105 transition-all flex items-center gap-2">
                <i className="fas fa-users-viewfinder text-sm"></i> Raise Chit
             </button>
          </div>
@@ -579,12 +762,19 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
               <div className="p-8">
                  {!reviewBatch ? (
                    <div className="space-y-6">
-                      <div className="bg-indigo-50 p-6 rounded-2xl border border-indigo-100 mb-6">
+                      <div className="bg-indigo-50 p-6 rounded-2xl border border-indigo-100 mb-6 space-y-4">
                         <div className="flex gap-4 items-center">
                            <div className="h-12 w-12 bg-indigo-500 rounded-xl flex items-center justify-center text-white"><i className="fas fa-calendar-alt text-xl"></i></div>
                            <div className="flex-1">
                               <label className="block text-xs font-black text-indigo-900 uppercase tracking-widest mb-1">Billing Date</label>
                               <input type="date" className="bg-white border-none rounded-lg px-4 py-2 w-full text-sm font-bold shadow-sm outline-none" value={billingDate} onChange={e => setBillingDate(e.target.value)} />
+                           </div>
+                        </div>
+                        <div className="flex gap-4 items-center">
+                           <div className="h-12 w-12 bg-rose-500 rounded-xl flex items-center justify-center text-white"><i className="fas fa-clock text-xl"></i></div>
+                           <div className="flex-1">
+                              <label className="block text-xs font-black text-rose-900 uppercase tracking-widest mb-1">Due Date</label>
+                              <input type="date" className="bg-white border-none rounded-lg px-4 py-2 w-full text-sm font-bold shadow-sm outline-none" value={dueDate} onChange={e => setDueDate(e.target.value)} />
                            </div>
                         </div>
                       </div>
@@ -598,6 +788,9 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
                                 {chitGroups.filter(g => g.status === 'ACTIVE').map(g => (
                                     <option key={g.id} value={g.id}>{g.name} - Next Month {g.auctions.length + 1}</option>
                                 ))}
+                                {chitGroups.filter(g => g.status === 'ACTIVE').length === 0 && chitGroups.length > 0 && (
+                                   <option disabled>No ACTIVE chit groups (found {chitGroups.length} total)</option>
+                                )}
                              </select>
                            </div>
                            <div className="grid grid-cols-2 gap-6">

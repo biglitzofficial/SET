@@ -22,18 +22,33 @@ const initializeFirebase = () => {
     
     let credential;
     
-    // Try to load from service account file first (for local dev)
+    // 1. Try service account JSON file (local dev)
     try {
       const serviceAccountPath = join(__dirname, '..', 'firebase-service-account.json');
       const serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
       credential = admin.credential.cert(serviceAccount);
-    } catch (err) {
-      // Fallback to environment variables
-      credential = admin.credential.cert({
-        projectId: process.env.FIREBASE_PROJECT_ID,
-        privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      });
+      console.log('✅ Firebase: loaded from service account file');
+    } catch (_fileErr) {
+      // 2. Try FIREBASE_SERVICE_ACCOUNT env var as full JSON (Cloud Run Secret Manager)
+      if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+        try {
+          const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+          credential = admin.credential.cert(serviceAccount);
+          console.log('✅ Firebase: loaded from FIREBASE_SERVICE_ACCOUNT env var');
+        } catch (parseErr) {
+          throw new Error('FIREBASE_SERVICE_ACCOUNT is not valid JSON: ' + parseErr.message);
+        }
+      } else if (process.env.FIREBASE_PROJECT_ID) {
+        // 3. Fallback: individual env vars
+        credential = admin.credential.cert({
+          projectId: process.env.FIREBASE_PROJECT_ID,
+          privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+        });
+        console.log('✅ Firebase: loaded from individual env vars');
+      } else {
+        throw new Error('No Firebase credentials found. Set FIREBASE_SERVICE_ACCOUNT or FIREBASE_PROJECT_ID env var.');
+      }
     }
 
     const app = admin.initializeApp({
@@ -70,7 +85,8 @@ export const COLLECTIONS = {
   CHIT_GROUPS: 'chitGroups',
   AUDIT_LOGS: 'auditLogs',
   SETTINGS: 'settings',
-  BANK_ACCOUNTS: 'bankAccounts'
+  BANK_ACCOUNTS: 'bankAccounts',
+  DUE_DATES: 'dueDates'
 };
 
 export { admin, db };

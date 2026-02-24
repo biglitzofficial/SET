@@ -87,6 +87,23 @@
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 10px; }
   ::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
+  
+  /* Custom Scrollbar for Outstanding Columns */
+  .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+  .custom-scrollbar::-webkit-scrollbar-track { background: #F1F5F9; border-radius: 10px; }
+  .custom-scrollbar::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 10px; }
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
+
+  /* Remove Number Input Spinners (Arrow Buttons) */
+  input[type="number"]::-webkit-outer-spin-button,
+  input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type="number"] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
 
   /* Utilities */
   .glass-panel {
@@ -102,6 +119,47 @@
   @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
   @keyframes scaleUp { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
 </style>
+
+<script>
+  // Prevent scroll wheel from changing number input values
+  document.addEventListener('wheel', function(e) {
+    if (e.target.type === 'number') {
+      e.preventDefault();
+      e.target.blur(); // Remove focus to clearly indicate scroll won't work
+    }
+  }, { passive: false });
+
+  // Also prevent it when using older mousewheel event
+  document.addEventListener('mousewheel', function(e) {
+    if (e.target.type === 'number') {
+      e.preventDefault();
+      e.target.blur();
+    }
+  }, { passive: false });
+
+  // Remove leading zeros from number inputs
+  document.addEventListener('input', function(e) {
+    if (e.target.type === 'number' && e.target.value) {
+      // Remove leading zeros but keep single zero or decimal values
+      let value = e.target.value;
+      
+      // If it starts with 0 and has more digits, remove leading zeros
+      if (value.match(/^0+[0-9]/)) {
+        e.target.value = value.replace(/^0+/, '');
+      }
+    }
+  });
+
+  // Also handle on focus to clean up any existing leading zeros
+  document.addEventListener('focus', function(e) {
+    if (e.target.type === 'number' && e.target.value) {
+      let value = e.target.value;
+      if (value.match(/^0+[0-9]/)) {
+        e.target.value = value.replace(/^0+/, '');
+      }
+    }
+  }, true);
+</script>
 </head>
 <body class="h-screen overflow-hidden text-slate-800 selection:bg-brand-100 selection:text-brand-900">
     <div id="root" class="h-full"></div>

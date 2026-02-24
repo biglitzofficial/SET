@@ -10,18 +10,26 @@ const __dirname = dirname(__filename);
  * This prevents runtime errors from missing configuration
  */
 export const validateEnv = () => {
-  // Check if firebase service account file exists
   const serviceAccountPath = join(__dirname, '..', 'firebase-service-account.json');
-  const hasServiceAccountFile = existsSync(serviceAccountPath);
 
   // JWT_SECRET and NODE_ENV are always required
   const required = ['JWT_SECRET', 'NODE_ENV'];
   
-  // Firebase credentials are only required if service account file doesn't exist
-  if (!hasServiceAccountFile) {
-    required.push('FIREBASE_PROJECT_ID', 'FIREBASE_CLIENT_EMAIL');
-  } else {
+  // Firebase credentials check:
+  // Accept any of: service account file | FIREBASE_SERVICE_ACCOUNT JSON env var | individual vars
+  const hasServiceAccountFile = existsSync(serviceAccountPath);
+  const hasServiceAccountEnvVar = !!process.env.FIREBASE_SERVICE_ACCOUNT;
+  const hasIndividualVars = !!(process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL);
+
+  if (hasServiceAccountFile) {
     console.log('✅ Firebase service account file found');
+  } else if (hasServiceAccountEnvVar) {
+    console.log('✅ Firebase credentials found via FIREBASE_SERVICE_ACCOUNT env var');
+  } else if (hasIndividualVars) {
+    console.log('✅ Firebase credentials found via individual env vars');
+  } else {
+    // None of the three are available — require the individual vars so the error message is clear
+    required.push('FIREBASE_PROJECT_ID', 'FIREBASE_CLIENT_EMAIL');
   }
 
   const missing = required.filter(key => !process.env[key]);

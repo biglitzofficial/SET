@@ -230,6 +230,7 @@ const App: React.FC = () => {
   });
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // Core Data State
   const [role, setRole] = useState<UserRole>(() => {
@@ -243,28 +244,8 @@ const App: React.FC = () => {
   const [incomeCategories, setIncomeCategories] = useState(['Salary', 'Commission', 'Incentives']);
 
   // --- UPDATED STAFF USERS WITH PERMISSIONS ---
-  const [staffUsers, setStaffUsers] = useState<StaffUser[]>([
-    { 
-        id: 'S001', 
-        name: 'Master Admin', 
-        username: 'admin', 
-        email: 'admin@srichendur.com', 
-        password: 'password', 
-        role: 'OWNER', 
-        status: 'ACTIVE',
-        permissions: { canEdit: true, canDelete: true, canManageUsers: true } 
-    },
-    { 
-        id: 'S002', 
-        name: 'Staff User', 
-        username: 'staff', 
-        email: 'staff@srichendur.com', 
-        password: 'password', 
-        role: 'STAFF', 
-        status: 'ACTIVE',
-        permissions: { canEdit: true, canDelete: false, canManageUsers: false } 
-    }
-  ]);
+  // staffUsers is populated from the backend — no hardcoded credentials
+  const [staffUsers, setStaffUsers] = useState<StaffUser[]>([]);
 
   const [openingBalances, setOpeningBalances] = useState(OPENING_BALANCES);
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([
@@ -289,55 +270,64 @@ const App: React.FC = () => {
 
   const loadDataFromBackend = async () => {
     setLoading(true);
-    try {
-      const [
-        customersData,
-        invoicesData,
-        paymentsData,
-        liabilitiesData,
-        chitGroupsData,
-        investmentsData,
-        settingsData
-      ] = await Promise.all([
-        customerAPI.getAll(),
-        invoiceAPI.getAll(),
-        paymentAPI.getAll(),
-        liabilityAPI.getAll(),
-        chitAPI.getAll(),
-        investmentAPI.getAll(),
-        settingsAPI.get()
-      ]);
+    setLoadError(null);
 
-      setCustomers(customersData);
-      setInvoices(invoicesData);
-      setPayments(paymentsData);
-      setLiabilities(liabilitiesData);
-      setChitGroups(chitGroupsData);
-      setInvestments(investmentsData);
-      
-      // Load settings - use saved data if available, otherwise keep current state
-      if (settingsData) {
-        if (settingsData.expenseCategories) setExpenseCategories(settingsData.expenseCategories);
-        if (settingsData.savingCategories) setSavingCategories(settingsData.savingCategories);
-        if (settingsData.otherBusinesses) setOtherBusinesses(settingsData.otherBusinesses);
-        if (settingsData.incomeCategories) setIncomeCategories(settingsData.incomeCategories);
-        if (settingsData.bankAccounts) setBankAccounts(settingsData.bankAccounts);
-      }
+    // Use allSettled so one failing endpoint does NOT blank out everything else
+    const [
+      customersResult,
+      invoicesResult,
+      paymentsResult,
+      liabilitiesResult,
+      chitGroupsResult,
+      investmentsResult,
+      settingsResult
+    ] = await Promise.allSettled([
+      customerAPI.getAll(),
+      invoiceAPI.getAll(),
+      paymentAPI.getAll(),
+      liabilityAPI.getAll(),
+      chitAPI.getAll(),
+      investmentAPI.getAll(),
+      settingsAPI.get()
+    ]);
 
-      // Load users and audit logs
-      const [usersData, auditLogsData] = await Promise.all([
-        settingsAPI.getUsers(),
-        settingsAPI.getAuditLogs()
-      ]);
-      
-      setStaffUsers(usersData);
-      setAuditLogs(auditLogsData);
+    if (customersResult.status === 'fulfilled') setCustomers(customersResult.value);
+    if (invoicesResult.status === 'fulfilled') setInvoices(invoicesResult.value);
+    if (paymentsResult.status === 'fulfilled') setPayments(paymentsResult.value);
+    if (liabilitiesResult.status === 'fulfilled') setLiabilities(liabilitiesResult.value);
+    if (chitGroupsResult.status === 'fulfilled') setChitGroups(chitGroupsResult.value);
+    if (investmentsResult.status === 'fulfilled') setInvestments(investmentsResult.value);
 
-    } catch (error) {
-      console.error('Failed to load data:', error);
-    } finally {
-      setLoading(false);
+    if (settingsResult.status === 'fulfilled' && settingsResult.value) {
+      const s = settingsResult.value;
+      if (s.expenseCategories) setExpenseCategories(s.expenseCategories);
+      if (s.savingCategories) setSavingCategories(s.savingCategories);
+      if (s.otherBusinesses) setOtherBusinesses(s.otherBusinesses);
+      if (s.incomeCategories) setIncomeCategories(s.incomeCategories);
+      if (s.bankAccounts) setBankAccounts(s.bankAccounts);
     }
+
+    // Load users and audit logs
+    const [usersResult, auditLogsResult] = await Promise.allSettled([
+      settingsAPI.getUsers(),
+      settingsAPI.getAuditLogs()
+    ]);
+    if (usersResult.status === 'fulfilled') setStaffUsers(usersResult.value);
+    if (auditLogsResult.status === 'fulfilled') setAuditLogs(auditLogsResult.value);
+
+    // If ALL core endpoints failed, the backend is unreachable — show error with retry
+    const allCoreFailed = [customersResult, invoicesResult, paymentsResult, liabilitiesResult]
+      .every(r => r.status === 'rejected');
+
+    if (allCoreFailed) {
+      const firstError = (customersResult as PromiseRejectedResult).reason;
+      setLoadError(
+        (firstError?.message || 'Could not connect to the server.') +
+        ' Please check your connection and try again.'
+      );
+    }
+
+    setLoading(false);
   };
 
   // Statistics Calculation (Unchanged logic, just keeping it here)
@@ -446,6 +436,46 @@ const App: React.FC = () => {
     return <Login onLogin={handleLogin} staffUsers={staffUsers} />;
   }
 
+  // Full-screen loading while initial data is fetched from backend
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#F3F4F6] flex flex-col items-center justify-center gap-6">
+        <div className="w-14 h-14 border-4 border-brand-200 border-t-brand-600 rounded-full animate-spin"></div>
+        <div className="text-center">
+          <div className="text-sm font-bold text-slate-700">Loading your data...</div>
+          <div className="text-xs text-slate-400 mt-1">Please wait while we sync with the server.</div>
+        </div>
+      </div>
+    );
+  }
+
+  // Full-screen error with retry if backend was completely unreachable
+  if (loadError) {
+    return (
+      <div className="min-h-screen bg-[#F3F4F6] flex flex-col items-center justify-center gap-6 p-8">
+        <div className="w-16 h-16 rounded-full bg-rose-100 flex items-center justify-center">
+          <i className="fas fa-plug-circle-xmark text-rose-500 text-2xl"></i>
+        </div>
+        <div className="text-center max-w-sm">
+          <div className="text-lg font-bold text-slate-800">Could not reach the server</div>
+          <div className="text-sm text-slate-500 mt-2">{loadError}</div>
+        </div>
+        <button
+          onClick={loadDataFromBackend}
+          className="px-6 py-3 bg-brand-600 text-white rounded-2xl font-semibold text-sm hover:bg-brand-700 transition shadow-md"
+        >
+          <i className="fas fa-rotate-right mr-2"></i>Retry
+        </button>
+        <button
+          onClick={handleLogout}
+          className="text-xs text-slate-400 hover:text-slate-600 transition underline"
+        >
+          Sign out
+        </button>
+      </div>
+    );
+  }
+
   return (
     <HashRouter>
       <div className="flex h-screen bg-[#F3F4F6] text-slate-800 font-sans overflow-hidden">
@@ -466,7 +496,7 @@ const App: React.FC = () => {
               </div>
             }>
               <Routes>
-                <Route path="/" element={<Dashboard stats={stats} invoices={invoices} payments={payments} role={role} setRole={setRole} customers={customers} />} />
+                <Route path="/" element={<Dashboard stats={stats} invoices={invoices} payments={payments} role={role} setRole={setRole} customers={customers} liabilities={liabilities} openingBalances={openingBalances} bankAccounts={bankAccounts} expenseCategories={expenseCategories} otherBusinesses={otherBusinesses} incomeCategories={incomeCategories} />} />
                 <Route path="/customers" element={<CustomerList customers={customers} setCustomers={setCustomers} invoices={invoices} payments={payments} setAuditLogs={setAuditLogs} currentUser={currentUser} />} />
                 <Route path="/invoices" element={<InvoiceList 
                   invoices={invoices} setInvoices={setInvoices} 
@@ -489,6 +519,10 @@ const App: React.FC = () => {
                   investments={investments}
                   setInvestments={setInvestments}
                   currentUser={currentUser}
+                  openingBalances={openingBalances}
+                  setOpeningBalances={setOpeningBalances}
+                  bankAccounts={bankAccounts}
+                  setBankAccounts={setBankAccounts}
                 />} />
                 <Route path="/reports/*" element={<ReportCenter 
                   payments={payments} invoices={invoices} customers={customers} 

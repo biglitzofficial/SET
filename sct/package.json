@@ -10,15 +10,16 @@
     "deploy": "vite build && firebase deploy"
   },
   "dependencies": {
-    "@playwright/test": "^1.58.1",
-    "firebase-admin": "^13.6.0",
     "react": "18.2.0",
     "react-dom": "18.2.0",
     "react-router-dom": "6.22.3",
-    "recharts": "2.12.3"
+    "recharts": "2.12.3",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.1",
     "@types/node": "^22.14.0",
+    "@types/xlsx": "^0.0.35",
     "@vitejs/plugin-react": "^5.0.0",
     "typescript": "~5.8.2",
     "vite": "^6.2.0"

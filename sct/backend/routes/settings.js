@@ -1,4 +1,5 @@
 import express from 'express';
+import bcrypt from 'bcryptjs';
 import { db, COLLECTIONS } from '../config/firebase.js';
 import { authenticate, authorize } from '../middleware/auth.js';
 
@@ -65,6 +66,114 @@ router.get('/users', [
   } catch (error) {
     console.error('Get users error:', error);
     res.status(500).json({ error: { message: 'Failed to fetch users' } });
+  }
+});
+
+// Create a new user (staff/owner)
+router.post('/users', [
+  authenticate,
+  authorize('OWNER')
+], async (req, res) => {
+  try {
+    const { name, username, password, role, permissions } = req.body;
+
+    if (!name || !username || !password) {
+      return res.status(400).json({ error: { message: 'name, username, and password are required' } });
+    }
+
+    // Check if username already exists
+    const existing = await db.collection(COLLECTIONS.USERS)
+      .where('username', '==', username)
+      .limit(1)
+      .get();
+
+    if (!existing.empty) {
+      return res.status(409).json({ error: { message: 'Username already exists' } });
+    }
+
+    // Hash the password
+    const hashedPassword = await bcrypt.hash(password, 12);
+
+    const userRef = await db.collection(COLLECTIONS.USERS).add({
+      name,
+      username,
+      password: hashedPassword,
+      email: `${username}@srichendur.com`,
+      role: role || 'STAFF',
+      status: 'ACTIVE',
+      permissions: permissions || { canEdit: false, canDelete: false, canManageUsers: false },
+      createdAt: Date.now(),
+      createdBy: req.user.id
+    });
+
+    res.status(201).json({ id: userRef.id, message: 'User created successfully' });
+  } catch (error) {
+    console.error('Create user error:', error);
+    res.status(500).json({ error: { message: 'Failed to create user' } });
+  }
+});
+
+// Update an existing user
+router.put('/users/:id', [
+  authenticate,
+  authorize('OWNER')
+], async (req, res) => {
+  try {
+    const { name, username, password, role, permissions, status } = req.body;
+    const userRef = db.collection(COLLECTIONS.USERS).doc(req.params.id);
+    const userDoc = await userRef.get();
+
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: { message: 'User not found' } });
+    }
+
+    const updates = {
+      updatedAt: Date.now(),
+      updatedBy: req.user.id
+    };
+
+    if (name) updates.name = name;
+    if (username) updates.username = username;
+    if (role) updates.role = role;
+    if (permissions) updates.permissions = permissions;
+    if (status) updates.status = status;
+
+    // Only hash & update password if a new one was supplied
+    if (password && password.length > 0) {
+      updates.password = await bcrypt.hash(password, 12);
+    }
+
+    await userRef.update(updates);
+    res.json({ message: 'User updated successfully' });
+  } catch (error) {
+    console.error('Update user error:', error);
+    res.status(500).json({ error: { message: 'Failed to update user' } });
+  }
+});
+
+// Delete a user
+router.delete('/users/:id', [
+  authenticate,
+  authorize('OWNER')
+], async (req, res) => {
+  try {
+    const userRef = db.collection(COLLECTIONS.USERS).doc(req.params.id);
+    const userDoc = await userRef.get();
+
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: { message: 'User not found' } });
+    }
+
+    // Prevent deleting yourself
+    if (req.params.id === req.user.id) {
+      return res.status(400).json({ error: { message: 'Cannot delete your own account' } });
+    }
+
+    await userRef.delete();
+    res.json({ message: 'User deleted successfully' });
+  } catch (error) {
+    console.error('Delete user error:', error);
+    res.status(500).json({ error: { message: 'Failed to delete user' } });
   }
 });
 

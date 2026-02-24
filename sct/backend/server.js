@@ -5,7 +5,6 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
-import slowDown from 'express-slow-down';
 
 // Import routes
 import authRoutes from './routes/auth.js';
@@ -17,6 +16,7 @@ import investmentRoutes from './routes/investments.js';
 import chitGroupRoutes from './routes/chitGroups.js';
 import settingsRoutes from './routes/settings.js';
 import reportRoutes from './routes/reports.js';
+import dueDatesRoutes from './routes/dueDates.js';
 
 // Import email service
 import { testEmailConnection } from './config/email.js';
@@ -100,21 +100,10 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // 4. Input Sanitization (XSS protection)
 app.use(sanitizeInput);
 
-// 5. General API Rate Limiter (100 requests per 15 minutes)
-const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: { message: 'Too many requests, please try again later.' } },
-  skip: (req) => req.path === '/api/health' || req.path === '/api/health/email', // Skip health checks
-});
-app.use('/api/', apiLimiter);
-
-// 6. Login Rate Limiter (5 attempts per 15 minutes)
+// 5. Login Rate Limiter ONLY (for security - 100 attempts per 15 minutes)
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 5,
+  max: 20, // 20 login attempts per 15 minutes per IP
   skipSuccessfulRequests: true,
   message: {
     error: {
@@ -122,23 +111,6 @@ const loginLimiter = rateLimit({
     },
   },
 });
-
-// 7. Write Operations Rate Limiter (50 operations per 15 minutes)
-const writeLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 50,
-  message: {
-    error: { message: 'Too many write operations. Please slow down.' },
-  },
-});
-
-// 8. Speed Limiter for Suspicious Activity
-const speedLimiter = slowDown({
-  windowMs: 15 * 60 * 1000,
-  delayAfter: 50,
-  delayMs: 500,
-});
-app.use('/api/', speedLimiter);
 
 // Request logging
 app.use((req, res, next) => {
@@ -165,17 +137,18 @@ app.get('/api/health/email', async (req, res) => {
 });
 
 // ============================================
-// API ROUTES WITH RATE LIMITING
+// API ROUTES - NO RATE LIMITING (except login)
 // ============================================
 app.use('/api/auth', loginLimiter, authRoutes);
-app.use('/api/customers', writeLimiter, customerRoutes);
-app.use('/api/invoices', writeLimiter, invoiceRoutes);
-app.use('/api/payments', writeLimiter, paymentRoutes);
-app.use('/api/liabilities', writeLimiter, liabilityRoutes);
-app.use('/api/investments', writeLimiter, investmentRoutes);
-app.use('/api/chit-groups', writeLimiter, chitGroupRoutes);
-app.use('/api/settings', writeLimiter, settingsRoutes);
-app.use('/api/reports', reportRoutes); // Read-only, no write limiter
+app.use('/api/customers', customerRoutes);
+app.use('/api/invoices', invoiceRoutes);
+app.use('/api/payments', paymentRoutes);
+app.use('/api/liabilities', liabilityRoutes);
+app.use('/api/investments', investmentRoutes);
+app.use('/api/chit-groups', chitGroupRoutes);
+app.use('/api/settings', settingsRoutes);
+app.use('/api/reports', reportRoutes);
+app.use('/api/due-dates', dueDatesRoutes);
 
 // ============================================
 // ERROR HANDLING MIDDLEWARE

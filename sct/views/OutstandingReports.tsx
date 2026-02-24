@@ -1,6 +1,8 @@
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Customer, Invoice, Liability, Payment } from '../types';
+import { dueDatesAPI } from '../services/api';
 
 interface OutstandingReportsProps {
   customers: Customer[];
@@ -8,12 +10,108 @@ interface OutstandingReportsProps {
   liabilities: Liability[];
   payments: Payment[]; // Added to calculate true ledger balance
   onDrillDown: (id: string, type: 'CUSTOMER' | 'LENDER') => void;
+  summaryOnly?: boolean; // If true, only show summary cards without detailed tables
 }
 
-const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invoices, liabilities, payments, onDrillDown }) => {
+interface DueDateRecord {
+  id: string; // customer/lender ID
+  category: string; // ROYALTY, INTEREST, CHIT, GENERAL, or PAYABLE
+  dueDate: number; // timestamp
+  amount: number;
+}
+
+const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invoices, liabilities, payments, onDrillDown, summaryOnly = false }) => {
+  const [searchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState<'RECEIVABLES' | 'PAYABLES' | 'ADVANCES' | 'MARKET_CAPITAL'>('RECEIVABLES');
   const [sortOrder, setSortOrder] = useState<'ASC' | 'DESC'>('DESC');
   const [receivableFilter, setReceivableFilter] = useState<'ALL' | 'ROYALTY' | 'INTEREST' | 'CHIT' | 'GENERAL'>('ALL');
+  
+  // Due dates storage - persisted in Firebase
+  const [dueDates, setDueDates] = useState<DueDateRecord[]>([]);
+  const [dueDatesLoading, setDueDatesLoading] = useState(true);
+  
+  // Date picker state
+  const [editingDueDate, setEditingDueDate] = useState<{ id: string; category: string } | null>(null);
+  
+  // Load due dates from Firebase
+  useEffect(() => {
+    const loadDueDates = async () => {
+      try {
+        const data = await dueDatesAPI.getAll();
+        setDueDates(data || []);
+      } catch (error) {
+        console.error('Failed to load due dates:', error);
+      } finally {
+        setDueDatesLoading(false);
+      }
+    };
+    loadDueDates();
+  }, []);
+  
+  // Helper: Set due date for an outstanding
+  const setDueDate = async (id: string, category: string, dueDate: number, amount: number) => {
+    try {
+      console.log('Saving due date:', { id, category, dueDate, amount });
+      const result = await dueDatesAPI.upsert({ id, category, dueDate, amount });
+      console.log('Due date saved successfully:', result);
+      setDueDates(prev => {
+        const filtered = prev.filter(d => !(d.id === id && d.category === category));
+        return [...filtered, { id, category, dueDate, amount }];
+      });
+      setEditingDueDate(null);
+    } catch (error: any) {
+      console.error('Failed to save due date:', error);
+      console.error('Error details:', error.message, error.stack);
+      alert(`Failed to save due date: ${error.message || 'Please try again.'}`);
+    }
+  };
+  
+  // Helper: Get due date for an outstanding
+  const getDueDate = (id: string, category: string): number | undefined => {
+    return dueDates.find(d => d.id === id && d.category === category)?.dueDate;
+  };
+  
+  // Helper: Categorize by due date
+  const categorizeDueDate = (dueDate: number | undefined): 'OVERDUE' | 'TODAY' | 'UPCOMING' | 'NONE' => {
+    if (!dueDate) return 'NONE';
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayTimestamp = today.getTime();
+    const dueDateObj = new Date(dueDate);
+    dueDateObj.setHours(0, 0, 0, 0);
+    const dueDateTimestamp = dueDateObj.getTime();
+    
+    if (dueDateTimestamp < todayTimestamp) return 'OVERDUE';
+    if (dueDateTimestamp === todayTimestamp) return 'TODAY';
+    return 'UPCOMING';
+  };
+  
+  // Helper: Check if due within 3 days (for reminders)
+  const isDueWithin3Days = (dueDate: number | undefined): boolean => {
+    if (!dueDate) return false;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const threeDaysFromNow = new Date(today.getTime() + 3 * 24 * 60 * 60 * 1000);
+    const dueDateObj = new Date(dueDate);
+    dueDateObj.setHours(0, 0, 0, 0);
+    return dueDateObj.getTime() >= today.getTime() && dueDateObj.getTime() <= threeDaysFromNow.getTime();
+  };
+
+  // Handle URL parameters for initial filter and tab
+  useEffect(() => {
+    const filter = searchParams.get('filter');
+    const tab = searchParams.get('tab');
+    
+    // Set the active tab if provided in URL
+    if (tab === 'receivables' || tab === 'payables' || tab === 'advances' || tab === 'market_capital') {
+      setActiveTab(tab.toUpperCase().replace('_', '_') as 'RECEIVABLES' | 'PAYABLES' | 'ADVANCES' | 'MARKET_CAPITAL');
+    }
+    
+    // Set the filter if provided in URL (only affects receivables filtering)
+    if (filter && (filter === 'royalty' || filter === 'interest' || filter === 'chit' || filter === 'general')) {
+      setReceivableFilter(filter.toUpperCase() as 'ROYALTY' | 'INTEREST' | 'CHIT' | 'GENERAL');
+    }
+  }, [searchParams]);
 
   const customerAnalysis = useMemo(() => {
     return customers.map(cust => {
@@ -72,37 +170,63 @@ const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invo
        result = customerAnalysis
          .map(c => {
             let displayAmount = 0;
-            if (receivableFilter === 'ALL') displayAmount = c.netLedgerBalance;
-            else displayAmount = c.breakdown[receivableFilter];
+            let categoryKey = '';
+            if (receivableFilter === 'ALL') {
+              displayAmount = c.netLedgerBalance;
+              categoryKey = 'ALL';
+            } else {
+              displayAmount = c.breakdown[receivableFilter];
+              categoryKey = receivableFilter;
+            }
             
-            return { ...c, displayAmount };
+            const dueDate = getDueDate(c.id, categoryKey);
+            const dueStatus = categorizeDueDate(dueDate);
+            const needsReminder = isDueWithin3Days(dueDate);
+            
+            return { ...c, displayAmount, categoryKey, dueDate, dueStatus, needsReminder };
          })
          .filter(c => c.displayAmount > 0); // Only positive receivables
     }
     else if (activeTab === 'ADVANCES') {
        // Advances are negative outstanding (Payables to customers or Overpayment)
        result = customerAnalysis
-         .map(c => ({ ...c, displayAmount: c.netLedgerBalance }))
+         .map(c => {
+           const dueDate = getDueDate(c.id, 'ADVANCE');
+           const dueStatus = categorizeDueDate(dueDate);
+           const needsReminder = isDueWithin3Days(dueDate);
+           return { ...c, displayAmount: c.netLedgerBalance, categoryKey: 'ADVANCE', dueDate, dueStatus, needsReminder };
+         })
          .filter(c => c.displayAmount < 0);
     }
     else if (activeTab === 'MARKET_CAPITAL') {
        result = customers
          .filter(c => c.isInterest && c.interestPrincipal > 0)
-         .map(c => ({ ...c, displayAmount: c.interestPrincipal }));
+         .map(c => {
+           const dueDate = getDueDate(c.id, 'CAPITAL');
+           const dueStatus = categorizeDueDate(dueDate);
+           const needsReminder = isDueWithin3Days(dueDate);
+           return { ...c, displayAmount: c.interestPrincipal, categoryKey: 'CAPITAL', dueDate, dueStatus, needsReminder };
+         });
     }
     else {
-       // PAYABLES: Lenders + Customers who are strictly Creditors (via Net Balance check above covers Advances, but this tab is for Dept/Liability list)
-       // We include Lenders here.
+       // PAYABLES: Lenders + Customers who are strictly Creditors
        const lenders = liabilities
          .filter(l => l.principal > 0)
-         .map(l => ({ ...l, displayAmount: l.principal }));
+         .map(l => {
+           const dueDate = getDueDate(l.id, 'PAYABLE');
+           const dueStatus = categorizeDueDate(dueDate);
+           const needsReminder = isDueWithin3Days(dueDate);
+           return { ...l, displayAmount: l.principal, categoryKey: 'PAYABLE', dueDate, dueStatus, needsReminder };
+         });
        
-       // Also include customers who are flagged as Creditors (Lenders) explicitly, using their creditPrincipal
-       // Note: The NetLedgerBalance check above (Advances) covers "Trade Payables" (e.g. Overpayment or Chit Prize).
-       // This PAYABLES tab covers "Debt" (Principal Borrowed).
        const customerCreditors = customers
          .filter(c => c.isLender && c.creditPrincipal > 0)
-         .map(c => ({ ...c, displayAmount: c.creditPrincipal, name: `${c.name} (Lender)` }));
+         .map(c => {
+           const dueDate = getDueDate(c.id, 'PAYABLE');
+           const dueStatus = categorizeDueDate(dueDate);
+           const needsReminder = isDueWithin3Days(dueDate);
+           return { ...c, displayAmount: c.creditPrincipal, name: `${c.name} (Lender)`, categoryKey: 'PAYABLE', dueDate, dueStatus, needsReminder };
+         });
 
        result = [...lenders, ...customerCreditors];
     }
@@ -113,12 +237,83 @@ const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invo
        const valB = Math.abs(b.displayAmount);
        return sortOrder === 'DESC' ? valB - valA : valA - valB;
     });
-  }, [activeTab, customerAnalysis, customers, liabilities, sortOrder, receivableFilter]);
+  }, [activeTab, customerAnalysis, customers, liabilities, sortOrder, receivableFilter, dueDates]);
+
+  // Categorize data into 3 columns based on due status
+  const categorizedData = useMemo(() => {
+    return {
+      overdue: data.filter(item => item.dueStatus === 'OVERDUE'),
+      today: data.filter(item => item.dueStatus === 'TODAY'),
+      upcoming: data.filter(item => item.dueStatus === 'UPCOMING'),
+      noDueDate: data.filter(item => item.dueStatus === 'NONE')
+    };
+  }, [data]);
 
   const grandTotal = useMemo(() => data.reduce((acc, item) => acc + (Math.abs(item.displayAmount || 0)), 0), [data]);
 
+  // Render item card (reusable component for all columns)
+  const renderOutstandingRow = (item: any) => (
+    <tr key={item.id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors group">
+      <td className="px-4 py-3">
+        <div className="flex items-center gap-2">
+          {item.needsReminder && (
+            <i className="fas fa-bell text-amber-500 text-xs"></i>
+          )}
+          <div>
+            <div className="font-black text-sm text-slate-900 uppercase">{item.name || item.providerName}</div>
+            {activeTab === 'RECEIVABLES' && receivableFilter !== 'ALL' && (
+              <span className="inline-block px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest bg-indigo-50 text-indigo-600 mt-1">
+                {receivableFilter}
+              </span>
+            )}
+          </div>
+        </div>
+      </td>
+      <td className="px-2 py-3 text-center">
+        {editingDueDate?.id === item.id && editingDueDate?.category === item.categoryKey ? (
+          <div className="flex gap-1 items-center justify-center">
+            <input 
+              type="date" 
+              className="px-1.5 py-1 border border-slate-300 rounded text-[11px] outline-none focus:border-indigo-500 w-28"
+              onChange={(e) => {
+                if (e.target.value) {
+                  const selectedDate = new Date(e.target.value).getTime();
+                  setDueDate(item.id, item.categoryKey, selectedDate, Math.abs(item.displayAmount));
+                }
+              }}
+              defaultValue={item.dueDate ? new Date(item.dueDate).toISOString().split('T')[0] : ''}
+            />
+            <button 
+              onClick={() => setEditingDueDate(null)}
+              className="px-1.5 py-1 bg-slate-200 rounded text-[10px] font-black hover:bg-slate-300"
+            >
+              <i className="fas fa-times"></i>
+            </button>
+          </div>
+        ) : (
+          <button 
+            onClick={() => setEditingDueDate({ id: item.id, category: item.categoryKey })}
+            className="flex items-center gap-1 px-2 py-1 bg-slate-50 rounded text-[11px] hover:bg-slate-100 transition font-bold text-slate-600 mx-auto"
+          >
+            <i className="fas fa-calendar-alt text-[9px]"></i>
+            {item.dueDate ? (
+              <span>{new Date(item.dueDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}</span>
+            ) : (
+              <span className="text-slate-400 text-[10px]">Set</span>
+            )}
+          </button>
+        )}
+      </td>
+      <td className="px-4 py-3 text-right">
+        <div className="text-base font-display font-black text-slate-900">
+          ₹{Math.abs(item.displayAmount).toLocaleString()}
+        </div>
+      </td>
+    </tr>
+  );
+
   return (
-    <div className="space-y-8 animate-fadeIn">
+    <div className="space-y-6 animate-fadeIn">
       {/* Controls Header */}
       <div className="flex flex-col md:flex-row justify-between items-center gap-4">
         <div className="flex bg-slate-100 p-1.5 rounded-2xl w-full md:w-auto overflow-x-auto">
@@ -162,62 +357,208 @@ const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invo
         </div>
       </div>
 
-      <div className="bg-white rounded-[1.5rem] border border-slate-200 shadow-lg overflow-hidden">
-        <table className="min-w-full divide-y divide-slate-100">
-          <thead className="bg-dark-900 text-white">
-            <tr>
-              <th className="px-6 py-5 text-left text-[10px] font-black uppercase tracking-widest opacity-80">Account Name</th>
-              {activeTab === 'RECEIVABLES' && <th className="px-6 py-5 text-left text-[10px] font-black uppercase tracking-widest opacity-80">Category</th>}
-              <th className="px-6 py-5 text-right text-[10px] font-black uppercase tracking-widest opacity-80 cursor-pointer hover:text-yellow-400 transition" onClick={() => setSortOrder(prev => prev === 'ASC' ? 'DESC' : 'ASC')}>
-                 {activeTab === 'RECEIVABLES' && receivableFilter !== 'ALL' ? `${receivableFilter} Due` : 'Net Outstanding'} <i className={`fas fa-sort ml-1 opacity-50`}></i>
-              </th>
-              <th className="px-6 py-5 text-right text-[10px] font-black uppercase tracking-widest opacity-80">Action</th>
-            </tr>
-          </thead>
-          <tbody className="bg-white divide-y divide-slate-50">
-            {data.map((item: any) => (
-              <tr key={item.id} className="hover:bg-slate-50 transition-colors">
-                <td className="px-6 py-5 text-sm font-bold text-slate-800 uppercase">
-                   {item.name || item.providerName}
-                   <div className="text-[9px] text-slate-400 font-bold">{item.phone}</div>
-                </td>
-                {activeTab === 'RECEIVABLES' && (
-                   <td className="px-6 py-5">
-                      <span className={`px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest ${
-                         receivableFilter !== 'ALL' 
-                           ? 'bg-slate-100 text-slate-600'
-                           : 'bg-indigo-50 text-indigo-600'
-                      }`}>
-                         {receivableFilter === 'ALL' ? 'CONSOLIDATED' : receivableFilter}
-                      </span>
-                   </td>
-                )}
-                <td className="px-6 py-5 text-right text-sm font-display font-black text-slate-900 italic">
-                  ₹{Math.abs(item.displayAmount).toLocaleString()}
-                </td>
-                <td className="px-6 py-5 text-right">
-                  <button 
-                    onClick={() => onDrillDown(item.id, activeTab === 'PAYABLES' && !item.partyType ? 'LENDER' : 'CUSTOMER')} 
-                    className="text-indigo-600 hover:text-indigo-800 text-[10px] font-black uppercase tracking-widest bg-indigo-50 px-3 py-1 rounded-lg hover:bg-indigo-100 transition"
-                  >
-                    View Ledger
-                  </button>
-                </td>
-              </tr>
-            ))}
-            {data.length === 0 && (
-              <tr><td colSpan={activeTab === 'RECEIVABLES' ? 4 : 3} className="px-6 py-10 text-center text-xs font-black text-slate-400 uppercase tracking-widest">No outstanding records found</td></tr>
+      {/* Summary Cards - Only show in Dashboard summary view */}
+      {summaryOnly && (
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="bg-gradient-to-br from-rose-50 to-rose-100 border-2 border-rose-200 rounded-2xl p-4">
+            <div className="flex items-center gap-2 mb-2">
+              <i className="fas fa-exclamation-circle text-rose-600 text-lg"></i>
+              <h3 className="text-[10px] font-black uppercase tracking-widest text-rose-600">Overdue</h3>
+            </div>
+            <div className="text-2xl font-display font-black text-rose-900">₹{categorizedData.overdue.reduce((sum, item) => sum + Math.abs(item.displayAmount), 0).toLocaleString()}</div>
+            <div className="text-[9px] font-black text-rose-600 mt-1">{categorizedData.overdue.length} items</div>
+          </div>
+
+          <div className="bg-gradient-to-br from-amber-50 to-amber-100 border-2 border-amber-200 rounded-2xl p-4">
+            <div className="flex items-center gap-2 mb-2">
+              <i className="fas fa-clock text-amber-600 text-lg"></i>
+              <h3 className="text-[10px] font-black uppercase tracking-widest text-amber-600">Due Today</h3>
+            </div>
+            <div className="text-2xl font-display font-black text-amber-900">₹{categorizedData.today.reduce((sum, item) => sum + Math.abs(item.displayAmount), 0).toLocaleString()}</div>
+            <div className="text-[9px] font-black text-amber-600 mt-1">{categorizedData.today.length} items</div>
+          </div>
+
+          <div className="bg-gradient-to-br from-blue-50 to-blue-100 border-2 border-blue-200 rounded-2xl p-4">
+            <div className="flex items-center gap-2 mb-2">
+              <i className="fas fa-calendar-check text-blue-600 text-lg"></i>
+              <h3 className="text-[10px] font-black uppercase tracking-widest text-blue-600">Upcoming</h3>
+            </div>
+            <div className="text-2xl font-display font-black text-blue-900">₹{categorizedData.upcoming.reduce((sum, item) => sum + Math.abs(item.displayAmount), 0).toLocaleString()}</div>
+            <div className="text-[9px] font-black text-blue-600 mt-1">{categorizedData.upcoming.length} items</div>
+          </div>
+
+          <div className="bg-gradient-to-br from-slate-50 to-slate-100 border-2 border-slate-200 rounded-2xl p-4">
+            <div className="flex items-center gap-2 mb-2">
+              <i className="fas fa-question-circle text-slate-600 text-lg"></i>
+              <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-600">No Due Date</h3>
+            </div>
+            <div className="text-2xl font-display font-black text-slate-900">₹{categorizedData.noDueDate.reduce((sum, item) => sum + Math.abs(item.displayAmount), 0).toLocaleString()}</div>
+            <div className="text-[9px] font-black text-slate-600 mt-1">{categorizedData.noDueDate.length} items</div>
+          </div>
+        </div>
+      )}
+
+      {/* 3-Column Layout - Only show if not summary only */}
+      {!summaryOnly && (
+        <>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* OVERDUE Column */}
+        <div className="space-y-4">
+          <div className="bg-gradient-to-r from-rose-600 to-rose-700 rounded-2xl p-4 shadow-lg">
+            <div className="flex items-center justify-between text-white">
+              <div className="flex items-center gap-3">
+                <i className="fas fa-exclamation-triangle text-2xl"></i>
+                <div>
+                  <h3 className="text-xs font-black uppercase tracking-widest">Overdue</h3>
+                  <p className="text-[9px] opacity-80 font-bold">Past Due Date</p>
+                </div>
+              </div>
+              <div className="text-right">
+                <div className="text-xl font-display font-black">₹{categorizedData.overdue.reduce((sum, item) => sum + Math.abs(item.displayAmount), 0).toLocaleString()}</div>
+                <div className="text-[8px] opacity-80 font-bold">{categorizedData.overdue.length} items</div>
+              </div>
+            </div>
+          </div>
+          <div className="max-h-[600px] overflow-auto custom-scrollbar">
+            {categorizedData.overdue.length > 0 ? (
+              <table className="w-full bg-white border border-slate-200 rounded-lg overflow-hidden">
+                <thead className="bg-slate-50 border-b border-slate-200">
+                  <tr>
+                    <th className="px-4 py-2 text-left text-[10px] font-black uppercase tracking-widest text-slate-600">Customer</th>
+                    <th className="px-2 py-2 text-center text-[10px] font-black uppercase tracking-widest text-slate-600 w-24">Due Date</th>
+                    <th className="px-4 py-2 text-right text-[10px] font-black uppercase tracking-widest text-slate-600">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {categorizedData.overdue.map(renderOutstandingRow)}
+                </tbody>
+              </table>
+            ) : (
+              <div className="bg-slate-50 rounded-xl p-8 text-center border-2 border-dashed border-slate-200">
+                <i className="fas fa-check-circle text-4xl text-slate-300 mb-3"></i>
+                <p className="text-xs font-black text-slate-400 uppercase tracking-widest">No Overdue Items</p>
+              </div>
             )}
-          </tbody>
-          <tfoot className="bg-slate-50 border-t-2 border-slate-100">
-             <tr>
-                <td colSpan={activeTab === 'RECEIVABLES' ? 2 : 1} className="px-6 py-5 text-left text-xs font-black uppercase tracking-widest text-slate-500">Total Outstanding</td>
-                <td className="px-6 py-5 text-right text-lg font-display font-black text-slate-900">₹{grandTotal.toLocaleString()}</td>
-                <td></td>
-             </tr>
-          </tfoot>
-        </table>
+          </div>
+        </div>
+
+        {/* DUE TODAY Column */}
+        <div className="space-y-4">
+          <div className="bg-gradient-to-r from-amber-500 to-amber-600 rounded-2xl p-4 shadow-lg">
+            <div className="flex items-center justify-between text-white">
+              <div className="flex items-center gap-3">
+                <i className="fas fa-clock text-2xl"></i>
+                <div>
+                  <h3 className="text-xs font-black uppercase tracking-widest">Due Today</h3>
+                  <p className="text-[9px] opacity-80 font-bold">Action Required</p>
+                </div>
+              </div>
+              <div className="text-right">
+                <div className="text-xl font-display font-black">₹{categorizedData.today.reduce((sum, item) => sum + Math.abs(item.displayAmount), 0).toLocaleString()}</div>
+                <div className="text-[8px] opacity-80 font-bold">{categorizedData.today.length} items</div>
+              </div>
+            </div>
+          </div>
+          <div className="max-h-[600px] overflow-auto custom-scrollbar">
+            {categorizedData.today.length > 0 ? (
+              <table className="w-full bg-white border border-slate-200 rounded-lg overflow-hidden">
+                <thead className="bg-slate-50 border-b border-slate-200">
+                  <tr>
+                    <th className="px-4 py-2 text-left text-[10px] font-black uppercase tracking-widest text-slate-600">Customer</th>
+                    <th className="px-2 py-2 text-center text-[10px] font-black uppercase tracking-widest text-slate-600 w-24">Due Date</th>
+                    <th className="px-4 py-2 text-right text-[10px] font-black uppercase tracking-widest text-slate-600">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {categorizedData.today.map(renderOutstandingRow)}
+                </tbody>
+              </table>
+            ) : (
+              <div className="bg-slate-50 rounded-xl p-8 text-center border-2 border-dashed border-slate-200">
+                <i className="fas fa-calendar-check text-4xl text-slate-300 mb-3"></i>
+                <p className="text-xs font-black text-slate-400 uppercase tracking-widest">No Items Due Today</p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* UPCOMING Column */}
+        <div className="space-y-4">
+          <div className="bg-gradient-to-r from-blue-600 to-blue-700 rounded-2xl p-4 shadow-lg">
+            <div className="flex items-center justify-between text-white">
+              <div className="flex items-center gap-3">
+                <i className="fas fa-calendar-alt text-2xl"></i>
+                <div>
+                  <h3 className="text-xs font-black uppercase tracking-widest">Upcoming</h3>
+                  <p className="text-[9px] opacity-80 font-bold">Future Due Dates</p>
+                </div>
+              </div>
+              <div className="text-right">
+                <div className="text-xl font-display font-black">₹{categorizedData.upcoming.reduce((sum, item) => sum + Math.abs(item.displayAmount), 0).toLocaleString()}</div>
+                <div className="text-[8px] opacity-80 font-bold">{categorizedData.upcoming.length} items</div>
+              </div>
+            </div>
+          </div>
+          <div className="max-h-[600px] overflow-auto custom-scrollbar">
+            {categorizedData.upcoming.length > 0 ? (
+              <table className="w-full bg-white border border-slate-200 rounded-lg overflow-hidden">
+                <thead className="bg-slate-50 border-b border-slate-200">
+                  <tr>
+                    <th className="px-4 py-2 text-left text-[10px] font-black uppercase tracking-widest text-slate-600">Customer</th>
+                    <th className="px-2 py-2 text-center text-[10px] font-black uppercase tracking-widest text-slate-600 w-24">Due Date</th>
+                    <th className="px-4 py-2 text-right text-[10px] font-black uppercase tracking-widest text-slate-600">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {categorizedData.upcoming.map(renderOutstandingRow)}
+                </tbody>
+              </table>
+            ) : (
+              <div className="bg-slate-50 rounded-xl p-8 text-center border-2 border-dashed border-slate-200">
+                <i className="fas fa-inbox text-4xl text-slate-300 mb-3"></i>
+                <p className="text-xs font-black text-slate-400 uppercase tracking-widest">No Upcoming Items</p>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
+
+      {/* Items Without Due Date */}
+      {categorizedData.noDueDate.length > 0 && (
+        <div className="bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200 p-6">
+          <h3 className="text-sm font-black uppercase tracking-widest text-slate-600 mb-4 flex items-center gap-2">
+            <i className="fas fa-question-circle"></i>
+            Items Without Due Date ({categorizedData.noDueDate.length})
+          </h3>
+          <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+            <table className="w-full">
+              <thead className="bg-slate-50 border-b border-slate-200">
+                <tr>
+                  <th className="px-4 py-2 text-left text-[10px] font-black uppercase tracking-widest text-slate-600">Customer</th>
+                  <th className="px-2 py-2 text-center text-[10px] font-black uppercase tracking-widest text-slate-600 w-24">Due Date</th>
+                  <th className="px-4 py-2 text-right text-[10px] font-black uppercase tracking-widest text-slate-600">Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {categorizedData.noDueDate.map(renderOutstandingRow)}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Total Summary */}
+      <div className="bg-slate-900 text-white rounded-2xl p-6 shadow-xl">
+        <div className="flex justify-between items-center">
+          <div className="flex items-center gap-3">
+            <i className="fas fa-chart-line text-2xl opacity-80"></i>
+            <h3 className="text-sm font-black uppercase tracking-widest opacity-80">Grand Total Outstanding</h3>
+          </div>
+          <div className="text-3xl font-display font-black">₹{grandTotal.toLocaleString()}</div>
+        </div>
+      </div>
+        </>
+      )}
     </div>
   );
 };

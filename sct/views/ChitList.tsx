@@ -104,8 +104,9 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
         await chitAPI.update(formData.id, formData);
         setChitGroups(prev => prev.map(g => g.id === formData.id ? formData : g));
       } else {
-        const newGroup = { ...formData, id: Math.random().toString(36).substr(2, 9) };
-        const created = await chitAPI.create(newGroup);
+        // Don't generate ID on frontend - let Firebase backend create it
+        const created = await chitAPI.create(formData);
+        console.log('Chit group created with Firebase ID:', created.id);
         setChitGroups(prev => [...prev, created]);
       }
       setShowForm(false);
@@ -312,7 +313,17 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
                        <button onClick={() => openEdit(group)} className="text-slate-300 hover:text-indigo-600 transition"><i className="fas fa-pen"></i></button>
                     )}
                     {currentUser?.permissions.canDelete && (
-                       <button onClick={() => setChitGroups(prev => prev.filter(g => g.id !== group.id))} className="text-slate-300 hover:text-red-500 transition"><i className="fas fa-trash-can"></i></button>
+                       <button onClick={async () => {
+                          if (!confirm(`Are you sure you want to delete "${group.name}"? This cannot be undone.`)) return;
+                          try {
+                            await chitAPI.delete(group.id);
+                            setChitGroups(prev => prev.filter(g => g.id !== group.id));
+                            console.log('Chit group deleted:', group.id);
+                          } catch (error) {
+                            console.error('Failed to delete chit group:', error);
+                            alert('Failed to delete chit group. Please try again.');
+                          }
+                       }} className="text-slate-300 hover:text-red-500 transition"><i className="fas fa-trash-can"></i></button>
                     )}
                  </div>
               </div>

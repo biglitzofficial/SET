@@ -36,7 +36,8 @@ async function apiRequest<T>(
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ message: 'Request failed' }));
-    throw new Error(error.message || `HTTP ${response.status}`);
+    console.error(`API Error [${response.status}] ${endpoint}:`, error);
+    throw new Error(error.error?.message || error.message || `HTTP ${response.status}`);
   }
 
   return response.json();
@@ -175,6 +176,11 @@ export const settingsAPI = {
       body: JSON.stringify(user),
     }),
   
+  deleteUser: (id: string) =>
+    apiRequest<void>(`/settings/users/${id}`, {
+      method: 'DELETE',
+    }),
+
   getBankAccounts: () => apiRequest<any[]>('/settings/bank-accounts'),
   
   getAuditLogs: () => apiRequest<any[]>('/settings/audit-logs'),
@@ -202,6 +208,11 @@ export const chitAPI = {
     apiRequest<any>(`/chit-groups/${id}`, {
       method: 'PUT',
       body: JSON.stringify(chitGroup),
+    }),
+  
+  delete: (id: string) =>
+    apiRequest<void>(`/chit-groups/${id}`, {
+      method: 'DELETE',
     }),
   
   recordAuction: (id: string, auctionData: any) =>
@@ -248,6 +259,22 @@ export const investmentAPI = {
     apiRequest<any>(`/investments/${id}/transaction`, {
       method: 'POST',
       body: JSON.stringify(transaction),
+    }),
+};
+
+// Due Dates API (for Outstanding Tracker)
+export const dueDatesAPI = {
+  getAll: () => apiRequest<any[]>('/due-dates'),
+  
+  upsert: (dueDate: { id: string; category: string; dueDate: number; amount: number }) =>
+    apiRequest<any>('/due-dates', {
+      method: 'POST',
+      body: JSON.stringify(dueDate),
+    }),
+  
+  delete: (id: string, category: string) =>
+    apiRequest<void>(`/due-dates/${id}/${category}`, {
+      method: 'DELETE',
     }),
 };
 

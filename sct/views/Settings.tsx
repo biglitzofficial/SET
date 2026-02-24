@@ -2,6 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { Customer, ChitGroup, Invoice, StaffUser, AuditLog, Payment, Liability, Investment, BankAccount } from '../types';
 import { settingsAPI } from '../services/api';
+import * as XLSX from 'xlsx';
 
 interface SettingsProps {
   expenseCategories: string[];
@@ -59,6 +60,25 @@ const Settings: React.FC<SettingsProps> = ({
   const [clearDataConfirmation, setClearDataConfirmation] = useState('');
   const [isClearingData, setIsClearingData] = useState(false);
   
+  // Audit Filter State
+  const [auditFilter, setAuditFilter] = useState<'ALL' | 'CREATE' | 'EDIT' | 'DELETE' | 'VOID' | 'LOGIN' | 'LOGOUT'>('ALL');
+  
+  // Temporary Banking Configuration State (shows current actual values for editing)
+  const [tempBankingConfig, setTempBankingConfig] = useState({
+    cash: openingBalances.CASH,
+    capital: openingBalances.CAPITAL,
+    banks: bankAccounts
+  });
+  
+  // Sync with actual balances when they change
+  useEffect(() => {
+    setTempBankingConfig({
+      cash: openingBalances.CASH,
+      capital: openingBalances.CAPITAL,
+      banks: bankAccounts
+    });
+  }, [openingBalances.CASH, openingBalances.CAPITAL, bankAccounts]);
+  
   // Auto-save settings to backend when categories change
   useEffect(() => {
     const saveSettings = async () => {
@@ -93,64 +113,134 @@ const Settings: React.FC<SettingsProps> = ({
   const [showImportModal, setShowImportModal] = useState(false);
   const [importType, setImportType] = useState<'CUSTOMERS' | 'PAYMENTS' | 'CHIT_GROUPS' | 'LIABILITIES' | 'INVOICES' | null>(null);
   const [importText, setImportText] = useState('');
+  const [isDragging, setIsDragging] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{status: 'idle' | 'processing' | 'success' | 'error' | 'manual', message: string, count?: number, data?: any[], headers?: string[]}>({status: 'idle', message: ''});
   
   // --- HELPER LOGIC ---
 
   const openStaffEdit = (user: StaffUser) => {
     setStaffFormData({ ...user, password: '' }); // Clear password for security
     setIsEditingStaff(true);
+    setStaffFormError('');
     setShowStaffForm(true);
   }
 
   const openStaffCreate = () => {
     setStaffFormData(initialStaffForm);
     setIsEditingStaff(false);
+    setStaffFormError('');
     setShowStaffForm(true);
   }
 
-  const handleSaveStaff = (e: React.FormEvent) => {
+  const [staffFormLoading, setStaffFormLoading] = useState(false);
+  const [staffFormError, setStaffFormError] = useState('');
+
+  const handleSaveStaff = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    if (isEditingStaff && staffFormData.id) {
+    setStaffFormLoading(true);
+    setStaffFormError('');
+
+    try {
+      if (isEditingStaff && staffFormData.id) {
+        // Build update payload (password only if provided)
+        const payload: any = {
+          name: staffFormData.name,
+          username: staffFormData.username,
+          role: staffFormData.role,
+          status: staffFormData.status || 'ACTIVE',
+          permissions: staffFormData.permissions,
+        };
+        if (staffFormData.password && staffFormData.password.length > 0) {
+          payload.password = staffFormData.password;
+        }
+
+        await settingsAPI.updateUser(staffFormData.id, payload);
+
         setStaffUsers(prev => prev.map(u => {
-            if (u.id === staffFormData.id) {
-                return {
-                    ...u,
-                    name: staffFormData.name || u.name,
-                    username: staffFormData.username || u.username,
-                    role: staffFormData.role || u.role,
-                    permissions: staffFormData.permissions || u.permissions,
-                    // Update password only if provided
-                    password: staffFormData.password && staffFormData.password.length > 0 ? staffFormData.password : u.password
-                };
-            }
-            return u;
+          if (u.id === staffFormData.id) {
+            return {
+              ...u,
+              name: staffFormData.name || u.name,
+              username: staffFormData.username || u.username,
+              role: staffFormData.role || u.role,
+              status: staffFormData.status || u.status,
+              permissions: staffFormData.permissions || u.permissions,
+            };
+          }
+          return u;
         }));
-    } else {
+      } else {
+        // Create new user — send password to backend to be hashed
+        const payload = {
+          name: staffFormData.name,
+          username: staffFormData.username,
+          password: staffFormData.password,
+          role: staffFormData.role || 'STAFF',
+          permissions: staffFormData.permissions || { canEdit: false, canDelete: false, canManageUsers: false },
+        };
+
+        const result = await settingsAPI.createUser(payload);
+
         const newUser: StaffUser = {
-            ...staffFormData as StaffUser,
-            id: Math.random().toString(36).substr(2, 9),
-            email: `${staffFormData.username}@srichendur.com`,
-            // Default permissions if missing
-            permissions: staffFormData.permissions || { canEdit: false, canDelete: false, canManageUsers: false }
+          ...staffFormData as StaffUser,
+          id: result.id,
+          email: `${staffFormData.username}@srichendur.com`,
+          permissions: staffFormData.permissions || { canEdit: false, canDelete: false, canManageUsers: false },
         };
         setStaffUsers([...staffUsers, newUser]);
+      }
+
+      setShowStaffForm(false);
+      setStaffFormData(initialStaffForm);
+    } catch (err: any) {
+      setStaffFormError(err.message || 'Failed to save user');
+    } finally {
+      setStaffFormLoading(false);
     }
-    
-    setShowStaffForm(false);
-    setStaffFormData(initialStaffForm);
   };
 
   const handleAddBank = () => {
+    const newId = `BANK_${Date.now()}`;
+    const newBank = { id: newId, name: 'NEW BANK', openingBalance: 0, status: 'ACTIVE' as const };
+    
+    // Add to actual bank accounts
     if (setBankAccounts) {
-      const newId = `BANK_${Date.now()}`;
-      setBankAccounts([...bankAccounts, { id: newId, name: 'NEW BANK', openingBalance: 0, status: 'ACTIVE' }]);
+      setBankAccounts(prev => [...prev, newBank]);
     }
+    
+    // Also add to temp config for immediate display
+    setTempBankingConfig(prev => ({
+      ...prev,
+      banks: [...prev.banks, newBank]
+    }));
   };
 
   const updateBank = (id: string, field: keyof BankAccount, value: any) => {
     if (setBankAccounts) {
       setBankAccounts(prev => prev.map(b => b.id === id ? { ...b, [field]: value } : b));
+    }
+  };
+  
+  // Update temporary bank values (draft mode)
+  const updateTempBank = (id: string, field: keyof BankAccount, value: any) => {
+    setTempBankingConfig(prev => ({
+      ...prev,
+      banks: prev.banks.map(b => b.id === id ? { ...b, [field]: value } : b)
+    }));
+  };
+  
+  // Save banking configuration (REPLACE actual values with temp values)
+  const handleSaveBankingConfig = () => {
+    // Replace opening balances with temp values
+    setOpeningBalances({
+      ...openingBalances,
+      CASH: tempBankingConfig.cash,
+      CAPITAL: tempBankingConfig.capital
+    });
+    
+    // Replace bank accounts with temp values
+    if (setBankAccounts) {
+      setBankAccounts(tempBankingConfig.banks);
     }
   };
 
@@ -219,6 +309,264 @@ const Settings: React.FC<SettingsProps> = ({
     reader.readAsText(file);
   };
 
+  // --- EXCEL UPLOAD & AUTO-DETECTION LOGIC ---
+  
+  const parseExcel = (file: File): Promise<any[]> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const data = new Uint8Array(e.target?.result as ArrayBuffer);
+          const workbook = XLSX.read(data, { type: 'array' });
+          
+          // Get the first worksheet
+          const sheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[sheetName];
+          
+          // Convert to JSON with header row as keys
+          const jsonData = XLSX.utils.sheet_to_json(worksheet, {
+            header: 1, // Use first row as headers
+            defval: '' // Default value for empty cells
+          });
+          
+          if (jsonData.length < 2) {
+            resolve([]);
+            return;
+          }
+          
+          const headers = jsonData[0] as string[];
+          const rows = jsonData.slice(1) as any[][];
+          
+          const parsedData = rows.map(row => {
+            const obj: any = {};
+            headers.forEach((header, i) => {
+              const value = row[i] !== undefined ? row[i] : '';
+              
+              // Type conversion
+              if (value === '' || value === null || value === undefined) {
+                obj[header] = null;
+              } else if (typeof value === 'boolean') {
+                obj[header] = value;
+              } else if (typeof value === 'number') {
+                obj[header] = value;
+              } else if (typeof value === 'string') {
+                const trimmed = value.toString().trim();
+                if (trimmed.toLowerCase() === 'true') {
+                  obj[header] = true;
+                } else if (trimmed.toLowerCase() === 'false') {
+                  obj[header] = false;
+                } else if (!isNaN(Number(trimmed)) && trimmed !== '') {
+                  obj[header] = Number(trimmed);
+                } else {
+                  obj[header] = trimmed;
+                }
+              } else {
+                obj[header] = value;
+              }
+            });
+            return obj;
+          }).filter(obj => Object.values(obj).some(val => val !== null && val !== '')); // Remove empty rows
+          
+          resolve(parsedData);
+        } catch (error) {
+          reject(error);
+        }
+      };
+      
+      reader.onerror = () => reject(new Error('Failed to read file'));
+      reader.readAsArrayBuffer(file);
+    });
+  };
+
+  const detectEntityType = (headers: string[]): string | null => {
+    const headerSet = new Set(headers.map(h => h.toLowerCase()));
+    
+    console.log('🔍 Excel Headers Detected:', headers);
+    console.log('🔍 Lowercase Headers:', Array.from(headerSet));
+    
+    // Customer detection - more flexible
+    if (headerSet.has('name') || headerSet.has('customer') || headerSet.has('customername')) {
+      console.log('✅ Detected: CUSTOMERS');
+      return 'CUSTOMERS';
+    }
+    
+    // Payment detection
+    if ((headerSet.has('type') || headerSet.has('paymenttype')) && 
+        (headerSet.has('amount') || headerSet.has('sourcename'))) {
+      console.log('✅ Detected: PAYMENTS');
+      return 'PAYMENTS';
+    }
+    
+    // Invoice detection
+    if ((headerSet.has('customerid') || headerSet.has('customer')) && 
+        (headerSet.has('amount') && (headerSet.has('balance') || headerSet.has('status')))) {
+      console.log('✅ Detected: INVOICES');
+      return 'INVOICES';
+    }
+    
+    // Liability detection
+    if ((headerSet.has('providername') || headerSet.has('provider') || headerSet.has('lender')) && 
+        (headerSet.has('principal') || headerSet.has('amount'))) {
+      console.log('✅ Detected: LIABILITIES');
+      return 'LIABILITIES';
+    }
+    
+    // Chit Group detection
+    if ((headerSet.has('groupname') || headerSet.has('chitname') || headerSet.has('group')) && 
+        (headerSet.has('totalvalue') || headerSet.has('value') || headerSet.has('amount'))) {
+      console.log('✅ Detected: CHIT_GROUPS');
+      return 'CHIT_GROUPS';
+    }
+    
+    console.log('❌ No entity type detected for headers:', headers);
+    return null;
+  };
+
+  const handleExcelUpload = async (file: File) => {
+    setUploadProgress({status: 'processing', message: 'Reading Excel file...'});
+    
+    try {
+      const data = await parseExcel(file);
+      
+      if (data.length === 0) {
+        setUploadProgress({status: 'error', message: 'Excel file is empty or invalid format'});
+        return;
+      }
+      
+      const headers = Object.keys(data[0]);
+      const entityType = detectEntityType(headers);
+      
+      if (!entityType) {
+        const headersList = headers.join(', ');
+        setUploadProgress({
+          status: 'manual', 
+          message: `Auto-detection failed. Found headers: ${headersList}`,
+          data: data,
+          headers: headers
+        });
+        return;
+      }
+      
+      setUploadProgress({status: 'processing', message: `Detected: ${entityType}. Importing ${data.length} records...`});
+      
+      // Map and import data
+      await new Promise(resolve => setTimeout(resolve, 500)); // UI feedback delay
+      
+      await importDataByType(entityType, data);
+    } catch (parseError) {
+      console.error('Excel parsing error:', parseError);
+      setUploadProgress({status: 'error', message: 'Failed to parse Excel file. Please check the format.'});
+    }
+  };
+
+  const handleManualImport = async (selectedType: string) => {
+    if (!uploadProgress.data) return;
+    
+    setUploadProgress({status: 'processing', message: `Importing ${uploadProgress.data.length} records as ${selectedType}...`});
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    try {
+      await importDataByType(selectedType, uploadProgress.data);
+    } catch (error) {
+      console.error('Manual import error:', error);
+      setUploadProgress({status: 'error', message: `Failed to import: ${error.message}`});
+    }
+  };
+
+  const importDataByType = async (entityType: string, data: any[]) => {
+    if (entityType === 'CUSTOMERS') {
+      const customers = data.map(row => ({
+        id: row.id || Math.random().toString(36).substr(2, 9),
+        name: row.name || row.customerName || '',
+        mobile: row.mobile || row.phone || '',
+        email: row.email || '',
+        address: row.address || '',
+        status: (row.status || 'ACTIVE').toUpperCase(),
+        isRoyalty: row.isRoyalty === true || row.isRoyalty === 'true' || false,
+        royaltyAmount: Number(row.royaltyAmount || 0),
+        isInterest: row.isInterest === true || row.isInterest === 'true' || false,
+        interestPrincipal: Number(row.interestPrincipal || 0),
+        interestRate: Number(row.interestRate || 0),
+        isChit: row.isChit === true || row.isChit === 'true' || false,
+        openingBalance: Number(row.openingBalance || 0),
+        createdAt: row.createdAt || Date.now()
+      }));
+      setCustomers(prev => [...prev, ...customers]);
+      setUploadProgress({status: 'success', message: 'Customers imported successfully!', count: customers.length});
+    }
+    
+    else if (entityType === 'PAYMENTS') {
+      const payments = data.map(row => ({
+        id: row.id || Math.random().toString(36).substr(2, 9),
+        type: (row.type || 'IN').toUpperCase(),
+        voucherType: (row.voucherType || 'RECEIPT').toUpperCase(),
+        sourceId: row.sourceId || '',
+        sourceName: row.sourceName || '',
+        amount: Number(row.amount || 0),
+        mode: (row.mode || 'CASH').toUpperCase(),
+        date: row.date || Date.now(),
+        category: row.category || 'GENERAL',
+        notes: row.notes || '',
+        businessUnit: row.businessUnit,
+        createdAt: row.createdAt || Date.now()
+      }));
+      setPayments(prev => [...prev, ...payments]);
+      setUploadProgress({status: 'success', message: 'Payments imported successfully!', count: payments.length});
+    }
+    
+    else if (entityType === 'INVOICES') {
+      const invoices = data.map(row => ({
+        id: row.id || `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        customerId: row.customerId || row.customer || '',
+        customerName: row.customerName || '',
+        type: (row.type || row.invoiceType || 'ROYALTY').toUpperCase(),
+        amount: Number(row.amount || 0),
+        balance: Number(row.balance !== undefined ? row.balance : row.amount || 0),
+        dueDate: row.dueDate || Date.now(),
+        status: (row.status || 'UNPAID').toUpperCase(),
+        direction: (row.direction || 'IN').toUpperCase(),
+        isVoid: row.isVoid === true || row.isVoid === 'true' || false,
+        createdAt: row.createdAt || Date.now()
+      }));
+      setInvoices(prev => [...prev, ...invoices]);
+      setUploadProgress({status: 'success', message: 'Invoices imported successfully!', count: invoices.length});
+    }
+    
+    else if (entityType === 'LIABILITIES') {
+      const liabilities = data.map(row => ({
+        id: row.id || Math.random().toString(36).substr(2, 9),
+        providerName: row.providerName || row.provider || row.lender || '',
+        principal: Number(row.principal || row.loanAmount || 0),
+        interestRate: Number(row.interestRate || row.rate || 0),
+        startDate: row.startDate || Date.now(),
+        status: (row.status || 'ACTIVE').toUpperCase(),
+        type: (row.type || 'LOAN').toUpperCase(),
+        notes: row.notes || '',
+        createdAt: row.createdAt || Date.now()
+      }));
+      if (setLiabilities) {
+        setLiabilities(prev => [...prev, ...liabilities]);
+      }
+      setUploadProgress({status: 'success', message: 'Liabilities imported successfully!', count: liabilities.length});
+    }
+    
+    else if (entityType === 'CHIT_GROUPS') {
+      const chitGroups = data.map(row => ({
+        id: row.id || Math.random().toString(36).substr(2, 9),
+        groupName: row.groupName || row.chitName || '',
+        totalValue: Number(row.totalValue || row.chitValue || 0),
+        monthlyInstallment: Number(row.monthlyInstallment || row.installment || 0),
+        durationMonths: Number(row.durationMonths || row.duration || 12),
+        startDate: row.startDate || Date.now(),
+        status: (row.status || 'ACTIVE').toUpperCase(),
+        members: row.members || [],
+        createdAt: row.createdAt || Date.now()
+      }));
+      setChitGroups(prev => [...prev, ...chitGroups]);
+      setUploadProgress({status: 'success', message: 'Chit Groups imported successfully!', count: chitGroups.length});
+    }
+  };
+
   const handleClearAllData = async () => {
     if (clearDataConfirmation !== 'DELETE ALL DATA') {
       alert('Please type exactly: DELETE ALL DATA');
@@ -253,10 +601,10 @@ const Settings: React.FC<SettingsProps> = ({
   };
 
   return (
-    <div className="space-y-8 animate-fadeIn">
+    <div className="space-y-4 animate-fadeIn">
       {/* Header */}
       <div>
-        <h2 className="text-3xl font-display font-black text-slate-900 uppercase italic tracking-tighter">System Config</h2>
+        <h2 className="text-2xl font-display font-black text-slate-900 uppercase italic tracking-tighter">System Config</h2>
         <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">Advanced Administration</p>
       </div>
 
@@ -281,33 +629,33 @@ const Settings: React.FC<SettingsProps> = ({
 
       {/* 2. FINANCE CONFIG (OPENING BALANCES & BANKS) */}
       {activeTab === 'FINANCE' && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
            
            {/* BANK ACCOUNTS SECTION */}
-           <div className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-sm">
-              <div className="flex justify-between items-center mb-6">
-                 <h3 className="text-lg font-display font-black text-slate-900 uppercase italic tracking-tighter">Banking Configuration</h3>
-                 <button onClick={handleAddBank} className="text-[10px] font-black bg-indigo-50 text-indigo-600 px-3 py-1.5 rounded-lg uppercase tracking-widest hover:bg-indigo-100">+ Add Bank</button>
+           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+              <div className="flex justify-between items-center mb-4">
+                 <h3 className="text-sm font-display font-black text-slate-900 uppercase italic tracking-tighter">Banking Configuration</h3>
+                 <button onClick={handleAddBank} className="text-[10px] font-black bg-indigo-50 text-indigo-600 px-2 py-1 rounded-lg uppercase tracking-widest hover:bg-indigo-100">+ Add</button>
               </div>
-              <div className="space-y-6">
-                 <div className="p-4 bg-slate-50 rounded-xl border border-slate-100">
-                    <div className="flex justify-between items-center mb-2">
+              <div className="space-y-3">
+                 <div className="p-3 bg-slate-50 rounded-lg border border-slate-100">
+                    <div className="flex justify-between items-center mb-1">
                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest">Cash Drawer</label>
                        <span className="text-[9px] font-black text-slate-300 uppercase">Fixed</span>
                     </div>
-                    <input type="number" className="w-full bg-white border border-slate-200 rounded-lg px-4 py-2 font-bold text-slate-900 outline-none focus:border-indigo-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={openingBalances.CASH} onChange={e => setOpeningBalances({...openingBalances, CASH: Number(e.target.value)})} />
+                    <input type="number" className="w-full bg-white border border-slate-200 rounded-lg px-3 py-1.5 font-bold text-sm text-slate-900 outline-none focus:border-indigo-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={tempBankingConfig.cash} onChange={e => setTempBankingConfig({...tempBankingConfig, cash: Number(e.target.value)})} />
                  </div>
 
-                 {bankAccounts.map((bank) => (
-                    <div key={bank.id} className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm relative group">
-                       <div className="grid grid-cols-2 gap-4">
+                 {tempBankingConfig.banks.map((bank) => (
+                    <div key={bank.id} className="p-3 bg-white rounded-lg border border-slate-200 shadow-sm relative group">
+                       <div className="grid grid-cols-2 gap-3">
                           <div>
-                             <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Bank Name</label>
-                             <input type="text" className="w-full bg-slate-50 border-none rounded-lg px-3 py-2 font-black uppercase text-xs outline-none focus:ring-2 focus:ring-indigo-100" value={bank.name} onChange={e => updateBank(bank.id, 'name', e.target.value.toUpperCase())} />
+                             <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Bank Name</label>
+                             <input type="text" className="w-full bg-slate-50 border-none rounded-lg px-2 py-1.5 font-black uppercase text-xs outline-none focus:ring-1 focus:ring-indigo-100" value={bank.name} onChange={e => updateTempBank(bank.id, 'name', e.target.value.toUpperCase())} />
                           </div>
                           <div>
-                             <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Opening Balance</label>
-                             <input type="number" className="w-full bg-slate-50 border-none rounded-lg px-3 py-2 font-bold text-xs outline-none focus:ring-2 focus:ring-indigo-100 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={bank.openingBalance} onChange={e => updateBank(bank.id, 'openingBalance', Number(e.target.value))} />
+                             <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Opening Balance</label>
+                             <input type="number" className="w-full bg-slate-50 border-none rounded-lg px-2 py-1.5 font-bold text-xs outline-none focus:ring-1 focus:ring-indigo-100 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={bank.openingBalance} onChange={e => updateTempBank(bank.id, 'openingBalance', Number(e.target.value))} />
                           </div>
                        </div>
                        <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -316,17 +664,24 @@ const Settings: React.FC<SettingsProps> = ({
                     </div>
                  ))}
 
-                 <div className="pt-4 border-t border-slate-100">
-                    <label className="block text-[10px] font-black text-emerald-600 uppercase tracking-widest mb-2">Owner's Capital (Equity)</label>
-                    <input type="number" className="w-full bg-emerald-50 border-2 border-emerald-100 rounded-xl px-4 py-3 font-bold text-emerald-700 outline-none focus:border-emerald-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={openingBalances.CAPITAL} onChange={e => setOpeningBalances({...openingBalances, CAPITAL: Number(e.target.value)})} />
+                 <div className="pt-3 border-t border-slate-100">
+                    <label className="block text-[10px] font-black text-emerald-600 uppercase tracking-widest mb-1">Owner's Capital</label>
+                    <input type="number" className="w-full bg-emerald-50 border border-emerald-100 rounded-lg px-3 py-1.5 font-bold text-sm text-emerald-700 outline-none focus:border-emerald-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={tempBankingConfig.capital} onChange={e => setTempBankingConfig({...tempBankingConfig, capital: Number(e.target.value)})} />
+                 </div>
+                 
+                 {/* Okay Button to Save Banking Configuration */}
+                 <div className="pt-3">
+                    <button onClick={handleSaveBankingConfig} className="w-full bg-indigo-600 text-white py-2 px-4 rounded-lg font-black text-sm uppercase tracking-widest hover:bg-indigo-700 transition-colors shadow-sm">
+                       <i className="fas fa-check mr-2"></i>Okay
+                    </button>
                  </div>
               </div>
            </div>
 
            {/* EXPENSE CATEGORIES */}
-           <div className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-sm h-fit">
-              <h3 className="text-lg font-display font-black text-slate-900 uppercase italic tracking-tighter mb-6">Expense Categories</h3>
-              <div className="flex flex-wrap gap-2 mb-6">
+           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm h-fit">
+              <h3 className="text-sm font-display font-black text-slate-900 uppercase italic tracking-tighter mb-3">Expense Categories</h3>
+              <div className="flex flex-wrap gap-2 mb-3">
                  {expenseCategories.filter(cat => cat && cat.trim()).map(cat => (
                     <span key={cat} className="bg-slate-100 text-slate-600 px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest flex items-center gap-2">
                        {cat}
@@ -339,7 +694,7 @@ const Settings: React.FC<SettingsProps> = ({
                    id="newCat" 
                    type="text" 
                    placeholder="NEW CATEGORY" 
-                   className="flex-1 bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 text-xs font-black uppercase outline-none focus:border-indigo-500"
+                   className="flex-1 bg-slate-50 border border-slate-100 rounded-lg px-3 py-1.5 text-xs font-black uppercase outline-none focus:border-indigo-500"
                    onKeyDown={(e) => {
                      if (e.key === 'Enter') {
                        e.preventDefault();
@@ -367,7 +722,7 @@ const Settings: React.FC<SettingsProps> = ({
                         }
                       }
                    }}
-                   className="bg-indigo-600 text-white px-6 rounded-xl font-black text-xs uppercase hover:bg-indigo-700"
+                   className="bg-indigo-600 text-white px-4 rounded-lg font-black text-xs uppercase hover:bg-indigo-700"
                  >
                     Add
                  </button>
@@ -375,11 +730,11 @@ const Settings: React.FC<SettingsProps> = ({
            </div>
 
            {/* BUSINESS UNITS (Formerly Income Categories) */}
-           <div className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-sm h-fit">
-              <h3 className="text-lg font-display font-black text-slate-900 uppercase italic tracking-tighter mb-2">Business Units</h3>
-              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-6">Other operational divisions</p>
+           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm h-fit">
+              <h3 className="text-sm font-display font-black text-slate-900 uppercase italic tracking-tighter mb-1">Business Units</h3>
+              <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-3">Other operational divisions</p>
               
-              <div className="flex flex-wrap gap-2 mb-6">
+              <div className="flex flex-wrap gap-2 mb-3">
                  {(otherBusinesses || []).filter(biz => biz && biz.trim()).map(biz => (
                     <span key={biz} className="bg-blue-50 text-blue-700 px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest flex items-center gap-2">
                        {biz}
@@ -393,7 +748,7 @@ const Settings: React.FC<SettingsProps> = ({
                    id="newBiz" 
                    type="text" 
                    placeholder="NEW UNIT (e.g. TRANSPORT)" 
-                   className="flex-1 bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 text-xs font-black uppercase outline-none focus:border-blue-500"
+                   className="flex-1 bg-slate-50 border border-slate-100 rounded-lg px-3 py-1.5 text-xs font-black uppercase outline-none focus:border-blue-500"
                    onKeyDown={(e) => {
                      if (e.key === 'Enter') {
                        e.preventDefault();
@@ -421,7 +776,7 @@ const Settings: React.FC<SettingsProps> = ({
                         }
                       }
                    }}
-                   className="bg-blue-600 text-white px-6 rounded-xl font-black text-xs uppercase hover:bg-blue-700"
+                   className="bg-blue-600 text-white px-4 rounded-lg font-black text-xs uppercase hover:bg-blue-700"
                  >
                     Add
                  </button>
@@ -429,11 +784,11 @@ const Settings: React.FC<SettingsProps> = ({
            </div>
 
            {/* DIRECT INCOME CATEGORIES (New) */}
-           <div className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-sm h-fit">
-              <h3 className="text-lg font-display font-black text-slate-900 uppercase italic tracking-tighter mb-2">Direct Income Categories</h3>
-              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-6">Salary, Commissions, Incentives</p>
+           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm h-fit">
+              <h3 className="text-sm font-display font-black text-slate-900 uppercase italic tracking-tighter mb-1">Direct Income Categories</h3>
+              <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-3">Salary, Commissions, Incentives</p>
               
-              <div className="flex flex-wrap gap-2 mb-6">
+              <div className="flex flex-wrap gap-2 mb-3">
                  {(incomeCategories || []).filter(inc => inc && inc.trim()).map(inc => (
                     <span key={inc} className="bg-emerald-50 text-emerald-700 px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest flex items-center gap-2">
                        {inc}
@@ -447,7 +802,7 @@ const Settings: React.FC<SettingsProps> = ({
                    id="newInc" 
                    type="text" 
                    placeholder="NEW TYPE (e.g. BONUS)" 
-                   className="flex-1 bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 text-xs font-black uppercase outline-none focus:border-emerald-500"
+                   className="flex-1 bg-slate-50 border border-slate-100 rounded-lg px-3 py-1.5 text-xs font-black uppercase outline-none focus:border-emerald-500"
                    onKeyDown={(e) => {
                      if (e.key === 'Enter') {
                        e.preventDefault();
@@ -475,7 +830,7 @@ const Settings: React.FC<SettingsProps> = ({
                         }
                       }
                    }}
-                   className="bg-emerald-600 text-white px-6 rounded-xl font-black text-xs uppercase hover:bg-emerald-700"
+                   className="bg-emerald-600 text-white px-4 rounded-lg font-black text-xs uppercase hover:bg-emerald-700"
                  >
                     Add
                  </button>
@@ -487,65 +842,108 @@ const Settings: React.FC<SettingsProps> = ({
 
       {/* 3. ACCESS (STAFF MANAGEMENT) */}
       {activeTab === 'ACCESS' && (
-         <div className="space-y-6">
+         <div className="space-y-5">
             <div className="flex justify-between items-end">
                <div>
                   <h3 className="text-lg font-display font-black text-slate-900 uppercase italic tracking-tighter">Staff Access Control</h3>
                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Manage Login Credentials & Privileges</p>
                </div>
                {currentUser?.permissions.canManageUsers && (
-                  <button onClick={openStaffCreate} className="bg-slate-900 text-white px-6 py-3 rounded-xl text-xs font-black uppercase tracking-widest hover:bg-slate-800 shadow-lg">
+                  <button onClick={openStaffCreate} className="bg-slate-900 text-white px-5 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest hover:bg-slate-800 shadow-md">
                      + Add User
                   </button>
                )}
             </div>
-            
-            <div className="bg-white border border-slate-200 rounded-[1.5rem] shadow-sm overflow-hidden">
-               <div className="overflow-x-auto">
-               <table className="min-w-full divide-y divide-slate-100">
-                  <thead className="bg-slate-50">
-                     <tr>
-                        <th className="px-6 py-4 text-left text-[10px] font-black uppercase tracking-widest text-slate-500">User Profile</th>
-                        <th className="px-6 py-4 text-left text-[10px] font-black uppercase tracking-widest text-slate-500">Username</th>
-                        <th className="px-6 py-4 text-left text-[10px] font-black uppercase tracking-widest text-slate-500">Role</th>
-                        <th className="px-6 py-4 text-center text-[10px] font-black uppercase tracking-widest text-slate-500">Access Rights</th>
-                        <th className="px-6 py-4 text-right text-[10px] font-black uppercase tracking-widest text-slate-500">Action</th>
-                     </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-50">
-                     {staffUsers.map(user => (
-                        <tr key={user.id} className="hover:bg-slate-50">
-                           <td className="px-6 py-4">
-                              <div className="flex items-center gap-3">
-                                 <div className="h-8 w-8 rounded-full bg-slate-200 flex items-center justify-center text-slate-500 text-xs font-black">
-                                    {user.name.charAt(0)}
-                                 </div>
-                                 <div className="text-sm font-bold text-slate-800">{user.name}</div>
+
+            <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+               {staffUsers.length === 0 ? (
+                  <div className="py-12 text-center text-slate-400 text-xs font-bold uppercase tracking-widest">No users found</div>
+               ) : (
+                  <ul className="divide-y divide-slate-100">
+                     {staffUsers.map(user => {
+                        const isActive = user.status !== 'INACTIVE';
+                        const perms = [];
+                        if (user.permissions?.canEdit) perms.push('Edit');
+                        if (user.permissions?.canDelete) perms.push('Delete');
+                        if (user.permissions?.canManageUsers) perms.push('Admin');
+                        return (
+                           <li key={user.id} className={`flex items-center gap-4 px-5 py-4 hover:bg-slate-50 transition-colors ${!isActive ? 'opacity-50' : ''}`}>
+                              {/* Avatar */}
+                              <div className={`h-9 w-9 rounded-full flex items-center justify-center text-sm font-black flex-shrink-0 ${user.role === 'OWNER' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>
+                                 {user.name.charAt(0).toUpperCase()}
                               </div>
-                           </td>
-                           <td className="px-6 py-4 text-xs font-bold text-slate-500">{user.username}</td>
-                           <td className="px-6 py-4">
-                              <span className={`px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest ${user.role === 'OWNER' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>
+
+                              {/* Name + username */}
+                              <div className="flex-1 min-w-0">
+                                 <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="text-sm font-bold text-slate-800 truncate">{user.name}</span>
+                                    <span className="text-[10px] font-bold text-slate-400">@{user.username}</span>
+                                 </div>
+                                 {perms.length > 0 && (
+                                    <div className="flex gap-1 mt-1 flex-wrap">
+                                       {perms.map(p => (
+                                          <span key={p} className="text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded">{p}</span>
+                                       ))}
+                                    </div>
+                                 )}
+                              </div>
+
+                              {/* Role */}
+                              <span className={`px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest flex-shrink-0 ${user.role === 'OWNER' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>
                                  {user.role}
                               </span>
-                           </td>
-                           <td className="px-6 py-4 text-center">
-                              <div className="flex justify-center gap-1">
-                                 {user.permissions?.canEdit && <span title="Edit Rights" className="w-5 h-5 flex items-center justify-center bg-blue-100 text-blue-600 rounded text-[9px]"><i className="fas fa-pen"></i></span>}
-                                 {user.permissions?.canDelete && <span title="Delete Rights" className="w-5 h-5 flex items-center justify-center bg-rose-100 text-rose-600 rounded text-[9px]"><i className="fas fa-trash"></i></span>}
-                                 {user.permissions?.canManageUsers && <span title="Admin/User Mgmt" className="w-5 h-5 flex items-center justify-center bg-purple-100 text-purple-600 rounded text-[9px]"><i className="fas fa-users-cog"></i></span>}
-                              </div>
-                           </td>
-                           <td className="px-6 py-4 text-right">
+
+                              {/* Status badge */}
+                              <span className={`px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest flex-shrink-0 ${isActive ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-400'}`}>
+                                 {isActive ? 'Active' : 'Inactive'}
+                              </span>
+
+                              {/* Actions */}
                               {currentUser?.permissions.canManageUsers && (
-                                 <button onClick={() => openStaffEdit(user)} className="text-[10px] font-black text-indigo-600 uppercase tracking-widest hover:underline">Edit / Reset</button>
+                                 <div className="flex items-center gap-2 flex-shrink-0">
+                                    <button
+                                       onClick={() => openStaffEdit(user)}
+                                       className="text-[10px] font-black text-indigo-600 uppercase tracking-widest hover:text-indigo-800 px-2 py-1 rounded-lg hover:bg-indigo-50 transition-colors"
+                                    >
+                                       Edit
+                                    </button>
+                                    <button
+                                       onClick={async () => {
+                                          try {
+                                             const newStatus = isActive ? 'INACTIVE' : 'ACTIVE';
+                                             await settingsAPI.updateUser(user.id, { status: newStatus });
+                                             setStaffUsers(prev => prev.map(u => u.id === user.id ? { ...u, status: newStatus } : u));
+                                          } catch (err: any) {
+                                             alert(err.message || 'Failed to update status');
+                                          }
+                                       }}
+                                       className={`text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded-lg transition-colors ${isActive ? 'text-amber-600 hover:bg-amber-50' : 'text-emerald-600 hover:bg-emerald-50'}`}
+                                    >
+                                       {isActive ? 'Deactivate' : 'Activate'}
+                                    </button>
+                                    {user.id !== currentUser?.id && (
+                                       <button
+                                          onClick={async () => {
+                                             if (!window.confirm(`Delete "${user.name}" (@${user.username})? This cannot be undone.`)) return;
+                                             try {
+                                                await settingsAPI.deleteUser(user.id);
+                                                setStaffUsers(prev => prev.filter(u => u.id !== user.id));
+                                             } catch (err: any) {
+                                                alert(err.message || 'Failed to delete user');
+                                             }
+                                          }}
+                                          className="text-[10px] font-black text-rose-500 uppercase tracking-widest px-2 py-1 rounded-lg hover:bg-rose-50 transition-colors"
+                                       >
+                                          Delete
+                                       </button>
+                                    )}
+                                 </div>
                               )}
-                           </td>
-                        </tr>
-                     ))}
-                  </tbody>
-               </table>
-               </div>
+                           </li>
+                        );
+                     })}
+                  </ul>
+               )}
             </div>
          </div>
       )}
@@ -633,20 +1031,140 @@ const Settings: React.FC<SettingsProps> = ({
               </div>
            </div>
 
-           {/* CSV TOOLS SECTION */}
+           {/* EXCEL DRAG & DROP UPLOAD */}
            <div className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-sm">
-              <h3 className="text-xl font-display font-black text-slate-900 uppercase italic tracking-tighter mb-6">Bulk Data Tools (CSV)</h3>
-              <div className="grid grid-cols-2 gap-4">
-                 {['CUSTOMERS', 'PAYMENTS', 'CHIT_GROUPS', 'LIABILITIES', 'INVOICES'].map(type => (
-                    <button 
-                       key={type}
-                       onClick={() => { setImportType(type as any); setShowImportModal(true); }}
-                       className="p-4 rounded-xl border-2 border-slate-100 hover:border-blue-500 hover:bg-blue-50 text-left transition-all group"
-                    >
-                       <div className="text-[9px] font-black text-slate-400 group-hover:text-blue-400 uppercase tracking-widest mb-1">Import</div>
-                       <div className="text-xs font-black text-slate-800 uppercase">{type.replace('_', ' ')}</div>
-                    </button>
-                 ))}
+              <h3 className="text-xl font-display font-black text-slate-900 uppercase italic tracking-tighter mb-6">Excel Data Upload</h3>
+              <p className="text-xs text-slate-500 mb-6">Drop an Excel file below. The app will automatically detect the data type and import it.</p>
+              
+              <div 
+                 className={`relative border-2 border-dashed rounded-2xl p-12 text-center transition-all ${
+                    isDragging ? 'border-indigo-500 bg-indigo-50' : 
+                    uploadProgress.status === 'processing' ? 'border-blue-400 bg-blue-50' :
+                    uploadProgress.status === 'success' ? 'border-emerald-500 bg-emerald-50' :
+                    uploadProgress.status === 'error' ? 'border-rose-500 bg-rose-50' :
+                    'border-slate-200 hover:border-slate-300 bg-slate-50'
+                 }`}
+                 onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+                 onDragLeave={() => setIsDragging(false)}
+                 onDrop={(e) => {
+                    e.preventDefault();
+                    setIsDragging(false);
+                    const file = e.dataTransfer.files[0];
+                    if (file && (file.name.endsWith('.xlsx') || file.name.endsWith('.xls'))) {
+                       handleExcelUpload(file);
+                    } else {
+                       setUploadProgress({status: 'error', message: 'Please upload an Excel file (.xlsx or .xls)'});
+                    }
+                 }}
+              >
+                 <input 
+                    type="file" 
+                    accept=".xlsx,.xls" 
+                    className="hidden" 
+                    id="excel-upload"
+                    onChange={(e) => {
+                       const file = e.target.files?.[0];
+                       if (file) handleExcelUpload(file);
+                    }}
+                 />
+                 
+                 {uploadProgress.status === 'idle' && (
+                    <label htmlFor="excel-upload" className="cursor-pointer">
+                       <div className="text-4xl mb-4 text-slate-300">
+                          <i className="fas fa-file-excel"></i>
+                       </div>
+                       <div className="text-sm font-bold text-slate-700 mb-2">Drop Excel file here or click to browse</div>
+                       <div className="text-xs text-slate-400">Auto-detects: Customers, Payments, Invoices, Liabilities, Chit Groups</div>
+                    </label>
+                 )}
+                 
+                 {uploadProgress.status === 'processing' && (
+                    <div>
+                       <div className="animate-spin text-4xl mb-4 text-blue-500">
+                          <i className="fas fa-spinner"></i>
+                       </div>
+                       <div className="text-sm font-bold text-blue-700">Processing Excel...</div>
+                       <div className="text-xs text-blue-500 mt-2">{uploadProgress.message}</div>
+                    </div>
+                 )}
+                 
+                 {uploadProgress.status === 'success' && (
+                    <div>
+                       <div className="text-4xl mb-4 text-emerald-500">
+                          <i className="fas fa-check-circle"></i>
+                       </div>
+                       <div className="text-sm font-bold text-emerald-700">Import Successful!</div>
+                       <div className="text-xs text-emerald-600 mt-2">{uploadProgress.message}</div>
+                       <div className="text-lg font-black text-emerald-800 mt-3">{uploadProgress.count} records imported</div>
+                       <button 
+                          onClick={() => setUploadProgress({status: 'idle', message: ''})} 
+                          className="mt-4 px-6 py-2 bg-emerald-600 text-white text-xs font-bold rounded-lg hover:bg-emerald-700"
+                       >
+                          Upload Another
+                       </button>
+                    </div>
+                 )}
+                 
+                 {uploadProgress.status === 'error' && (
+                    <div>
+                       <div className="text-4xl mb-4 text-rose-500">
+                          <i className="fas fa-exclamation-circle"></i>
+                       </div>
+                       <div className="text-sm font-bold text-rose-700">Import Failed</div>
+                       <div className="text-xs text-rose-600 mt-2">{uploadProgress.message}</div>
+                       <button 
+                          onClick={() => setUploadProgress({status: 'idle', message: ''})} 
+                          className="mt-4 px-6 py-2 bg-rose-600 text-white text-xs font-bold rounded-lg hover:bg-rose-700"
+                       >
+                          Try Again
+                       </button>
+                    </div>
+                 )}
+                 
+                 {uploadProgress.status === 'manual' && (
+                    <div>
+                       <div className="text-4xl mb-4 text-blue-500">
+                          <i className="fas fa-question-circle"></i>
+                       </div>
+                       <div className="text-sm font-bold text-blue-700 mb-2">Manual Selection Required</div>
+                       <div className="text-xs text-blue-600 mb-4">{uploadProgress.message}</div>
+                       <div className="text-xs text-slate-600 mb-4">Choose data type:</div>
+                       <div className="grid grid-cols-2 gap-2 mb-4">
+                          {['CUSTOMERS', 'PAYMENTS', 'INVOICES', 'LIABILITIES', 'CHIT_GROUPS'].map(type => (
+                             <button
+                                key={type}
+                                onClick={() => handleManualImport(type)}
+                                className="px-3 py-2 bg-blue-600 text-white text-xs font-bold rounded-lg hover:bg-blue-700 transition"
+                             >
+                                {type.replace('_', ' ')}
+                             </button>
+                          ))}
+                       </div>
+                       <button 
+                          onClick={() => setUploadProgress({status: 'idle', message: ''})} 
+                          className="text-xs text-slate-500 hover:text-slate-700"
+                       >
+                          Cancel
+                       </button>
+                    </div>
+                 )}
+              </div>
+              
+              {/* Supported Formats Info */}
+              <div className="mt-6 p-4 bg-slate-50 rounded-xl border border-slate-200">
+                 <div className="text-xs font-bold text-slate-700 mb-2">📊 Excel Format Examples:</div>
+                 <div className="grid grid-cols-2 gap-3 text-[10px] text-slate-500">
+                    <div><span className="font-bold">Customers:</span> name, mobile, email, address, isRoyalty, royaltyAmount...</div>
+                    <div><span className="font-bold">Payments:</span> type, voucherType, sourceName, amount, mode, date...</div>
+                    <div><span className="font-bold">Invoices:</span> customerId, type, amount, balance, dueDate...</div>
+                    <div><span className="font-bold">Liabilities:</span> providerName, principal, interestRate, startDate...</div>
+                 </div>
+                 <button 
+                    onClick={() => setShowImportModal(true)}
+                    className="mt-3 w-full py-2 bg-indigo-100 text-indigo-700 text-xs font-bold rounded-lg hover:bg-indigo-200 transition"
+                 >
+                    📖 View Full Excel Templates
+                 </button>
               </div>
            </div>
           </div>
@@ -665,6 +1183,35 @@ const Settings: React.FC<SettingsProps> = ({
               <div className="text-2xl font-display font-black text-slate-900">{auditLogs.length}</div>
               <div className="text-[9px] font-bold text-slate-400 uppercase">Total Entries</div>
             </div>
+          </div>
+
+          {/* Filter Buttons */}
+          <div className="flex flex-wrap gap-2">
+            {(['ALL', 'CREATE', 'EDIT', 'DELETE', 'VOID', 'LOGIN', 'LOGOUT'] as const).map(filter => {
+              const count = filter === 'ALL' 
+                ? auditLogs.length 
+                : auditLogs.filter(log => log.action === filter).length;
+              
+              return (
+                <button
+                  key={filter}
+                  onClick={() => setAuditFilter(filter)}
+                  className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${
+                    auditFilter === filter
+                      ? filter === 'ALL' ? 'bg-slate-900 text-white shadow-lg' :
+                        filter === 'CREATE' ? 'bg-emerald-600 text-white shadow-lg' :
+                        filter === 'EDIT' ? 'bg-blue-600 text-white shadow-lg' :
+                        filter === 'DELETE' ? 'bg-rose-600 text-white shadow-lg' :
+                        filter === 'VOID' ? 'bg-orange-600 text-white shadow-lg' :
+                        filter === 'LOGIN' ? 'bg-indigo-600 text-white shadow-lg' :
+                        'bg-purple-600 text-white shadow-lg'
+                      : 'bg-white text-slate-600 border border-slate-200 hover:border-slate-300 hover:shadow-sm'
+                  }`}
+                >
+                  {filter} <span className="ml-1.5 opacity-75">({count})</span>
+                </button>
+              );
+            })}
           </div>
 
           {auditLogs.length === 0 ? (
@@ -688,7 +1235,10 @@ const Settings: React.FC<SettingsProps> = ({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50">
-                    {[...auditLogs].reverse().map((log) => (
+                    {[...auditLogs]
+                      .filter(log => auditFilter === 'ALL' || log.action === auditFilter)
+                      .reverse()
+                      .map((log) => (
                       <tr key={log.id} className="hover:bg-slate-50 transition">
                         <td className="px-6 py-4">
                           <div className="text-xs font-bold text-slate-800">
@@ -726,7 +1276,7 @@ const Settings: React.FC<SettingsProps> = ({
                         </td>
                         <td className="px-6 py-4">
                           <div className="text-xs font-bold text-slate-700 uppercase">{log.entityType}</div>
-                          <div className="text-[9px] text-slate-400 font-mono">{log.entityId.substring(0, 8)}...</div>
+                          <div className="text-[9px] text-slate-400 font-mono">{log.entityId ? log.entityId.substring(0, 8) + '...' : 'N/A'}</div>
                         </td>
                         <td className="px-6 py-4">
                           <div className="text-xs text-slate-700 max-w-md">{log.description}</div>
@@ -743,6 +1293,15 @@ const Settings: React.FC<SettingsProps> = ({
                   </tbody>
                 </table>
               </div>
+              
+              {/* No Results Message */}
+              {auditFilter !== 'ALL' && auditLogs.filter(log => log.action === auditFilter).length === 0 && (
+                <div className="p-12 text-center">
+                  <i className="fas fa-filter text-4xl text-slate-200 mb-3"></i>
+                  <p className="text-sm font-bold text-slate-400">No {auditFilter} actions found</p>
+                  <p className="text-xs text-slate-300 mt-1">Try selecting a different filter</p>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -867,6 +1426,16 @@ const Settings: React.FC<SettingsProps> = ({
                      </div>
                   </div>
 
+                  {isEditingStaff && (
+                     <div>
+                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Account Status</label>
+                        <div className="flex bg-slate-100 p-1 rounded-xl">
+                           <button type="button" onClick={() => setStaffFormData({...staffFormData, status: 'ACTIVE'})} className={`flex-1 py-3 text-xs font-bold rounded-lg transition ${staffFormData.status !== 'INACTIVE' ? 'bg-white shadow text-emerald-600' : 'text-slate-400'}`}>Active</button>
+                           <button type="button" onClick={() => setStaffFormData({...staffFormData, status: 'INACTIVE'})} className={`flex-1 py-3 text-xs font-bold rounded-lg transition ${staffFormData.status === 'INACTIVE' ? 'bg-white shadow text-rose-500' : 'text-slate-400'}`}>Inactive</button>
+                        </div>
+                     </div>
+                  )}
+
                   <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
                      <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Security Clearance</label>
                      <div className="space-y-3">
@@ -886,11 +1455,16 @@ const Settings: React.FC<SettingsProps> = ({
                   </div>
 
                   <div className="pt-4 flex gap-3">
-                     <button type="button" onClick={() => setShowStaffForm(false)} className="flex-1 py-3 text-slate-400 font-black uppercase text-xs tracking-widest hover:bg-slate-50 rounded-xl">Cancel</button>
-                     <button type="submit" className="flex-1 py-3 bg-slate-900 text-white font-black uppercase text-xs tracking-widest rounded-xl hover:bg-slate-800">
-                        {isEditingStaff ? 'Update User' : 'Create User'}
+                     <button type="button" onClick={() => { setShowStaffForm(false); setStaffFormError(''); }} className="flex-1 py-3 text-slate-400 font-black uppercase text-xs tracking-widest hover:bg-slate-50 rounded-xl">Cancel</button>
+                     <button type="submit" disabled={staffFormLoading} className="flex-1 py-3 bg-slate-900 text-white font-black uppercase text-xs tracking-widest rounded-xl hover:bg-slate-800 disabled:opacity-60 disabled:cursor-not-allowed">
+                        {staffFormLoading ? 'Saving...' : (isEditingStaff ? 'Update User' : 'Create User')}
                      </button>
                   </div>
+                  {staffFormError && (
+                    <div className="text-[11px] font-semibold text-rose-500 bg-rose-50 p-3 rounded-xl flex items-center gap-2 mt-2">
+                      <i className="fas fa-circle-exclamation"></i> {staffFormError}
+                    </div>
+                  )}
                </form>
             </div>
          </div>
@@ -898,17 +1472,70 @@ const Settings: React.FC<SettingsProps> = ({
 
       {showImportModal && (
         <div className="fixed inset-0 bg-slate-900 bg-opacity-90 flex items-center justify-center z-[100] p-4 backdrop-blur-sm">
-           <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-lg animate-scaleUp overflow-hidden">
+           <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-4xl animate-scaleUp overflow-hidden">
               <div className="p-8 border-b border-slate-100 bg-slate-50">
-                 <h3 className="text-xl font-display font-black text-slate-900 uppercase italic tracking-tighter">Import {importType?.replace('_', ' ')}</h3>
-                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">CSV Data Upload</p>
+                 <h3 className="text-xl font-display font-black text-slate-900 uppercase italic tracking-tighter">Excel Format Templates</h3>
+                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Copy these headers for your Excel files</p>
               </div>
-              <div className="p-8 space-y-6">
-                 <p className="text-xs text-slate-500">Please paste your CSV data below. Ensure headers match the template.</p>
-                 <textarea className="w-full h-40 border-2 border-slate-100 rounded-xl p-4 text-xs font-mono bg-slate-50 outline-none focus:border-indigo-500" placeholder="PASTE CSV CONTENT HERE..." value={importText} onChange={e => setImportText(e.target.value)}></textarea>
-                 <div className="flex gap-4">
-                    <button onClick={() => setShowImportModal(false)} className="flex-1 py-3 text-slate-400 font-black uppercase text-xs tracking-widest hover:bg-slate-50 rounded-xl">Cancel</button>
-                    <button disabled className="flex-1 py-3 bg-indigo-600 text-white font-black uppercase text-xs tracking-widest rounded-xl hover:bg-indigo-700 shadow-lg opacity-50 cursor-not-allowed">Process Import</button>
+              <div className="p-8 space-y-8 max-h-[70vh] overflow-y-auto">
+                 
+                 {/* Customers Template */}
+                 <div className="border border-slate-200 rounded-xl p-6">
+                    <h4 className="text-lg font-bold text-slate-800 mb-3">📋 CUSTOMERS EXCEL</h4>
+                    <div className="bg-slate-100 p-4 rounded-lg font-mono text-xs overflow-x-auto">
+                       <div>name,mobile,email,address,status,isRoyalty,royaltyAmount,isInterest,interestPrincipal,interestRate,isChit,openingBalance</div>
+                       <div className="text-slate-500 mt-2">John Doe,9876543210,john@email.com,123 Main St,ACTIVE,true,5000,false,0,0,false,10000</div>
+                    </div>
+                 </div>
+                 
+                 {/* Payments Template */}
+                 <div className="border border-slate-200 rounded-xl p-6">
+                    <h4 className="text-lg font-bold text-slate-800 mb-3">💳 PAYMENTS EXCEL</h4>
+                    <div className="bg-slate-100 p-4 rounded-lg font-mono text-xs overflow-x-auto">
+                       <div>type,voucherType,sourceId,sourceName,amount,mode,date,category,notes,businessUnit</div>
+                       <div className="text-slate-500 mt-2">IN,RECEIPT,cust123,John Doe,15000,CASH,1770000000000,ROYALTY,,</div>
+                    </div>
+                 </div>
+                 
+                 {/* Invoices Template */}
+                 <div className="border border-slate-200 rounded-xl p-6">
+                    <h4 className="text-lg font-bold text-slate-800 mb-3">📄 INVOICES EXCEL</h4>
+                    <div className="bg-slate-100 p-4 rounded-lg font-mono text-xs overflow-x-auto">
+                       <div>customerId,customerName,type,amount,balance,dueDate,status,direction,isVoid</div>
+                       <div className="text-slate-500 mt-2">cust123,John Doe,ROYALTY,20000,15000,1770000000000,UNPAID,IN,false</div>
+                    </div>
+                 </div>
+                 
+                 {/* Liabilities Template */}
+                 <div className="border border-slate-200 rounded-xl p-6">
+                    <h4 className="text-lg font-bold text-slate-800 mb-3">💰 LIABILITIES EXCEL</h4>
+                    <div className="bg-slate-100 p-4 rounded-lg font-mono text-xs overflow-x-auto">
+                       <div>providerName,principal,interestRate,startDate,status,type,notes</div>
+                       <div className="text-slate-500 mt-2">ABC Bank,500000,12.5,1770000000000,ACTIVE,LOAN,Home loan</div>
+                    </div>
+                 </div>
+                 
+                 {/* Chit Groups Template */}
+                 <div className="border border-slate-200 rounded-xl p-6">
+                    <h4 className="text-lg font-bold text-slate-800 mb-3">🎲 CHIT GROUPS EXCEL</h4>
+                    <div className="bg-slate-100 p-4 rounded-lg font-mono text-xs overflow-x-auto">
+                       <div>groupName,totalValue,monthlyInstallment,durationMonths,startDate,status</div>
+                       <div className="text-slate-500 mt-2">Chit Fund A,100000,5000,20,1770000000000,ACTIVE</div>
+                    </div>
+                 </div>
+                 
+              </div>
+              <div className="p-8 border-t border-slate-100 bg-slate-50">
+                 <div className="flex justify-between items-center">
+                    <div className="text-xs text-slate-500">
+                       💡 <strong>Tip:</strong> Use these exact headers in your Excel files for auto-detection
+                    </div>
+                    <button 
+                       onClick={() => setShowImportModal(false)} 
+                       className="px-6 py-3 bg-slate-600 text-white font-black uppercase text-xs tracking-widest rounded-xl hover:bg-slate-700 shadow-lg"
+                    >
+                       Got It
+                    </button>
                  </div>
               </div>
            </div>

@@ -62,10 +62,13 @@ router.post('/', [
       return res.status(400).json({ errors: errors.array() });
     }
 
+    // Remove any client-provided ID to avoid conflicts
+    const { id, ...requestData } = req.body;
+
     const chitGroupData = {
-      ...req.body,
+      ...requestData,
       currentMonth: 0,
-      members: req.body.members || [],
+      members: requestData.members || [],
       auctions: [],
       status: 'ACTIVE',
       createdAt: Date.now(),
@@ -74,9 +77,11 @@ router.post('/', [
 
     const docRef = await db.collection(COLLECTIONS.CHIT_GROUPS).add(chitGroupData);
     
+    console.log('Created chit group with Firebase ID:', docRef.id);
+    
     res.status(201).json({ 
-      id: docRef.id, 
-      ...chitGroupData 
+      ...chitGroupData,
+      id: docRef.id  // Set Firebase-generated ID last so it can't be overwritten
     });
   } catch (error) {
     console.error('Create chit group error:', error);

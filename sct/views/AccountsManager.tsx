@@ -1,6 +1,6 @@
 
 import React, { useState, useMemo } from 'react';
-import { Payment, Customer, Invoice, UserRole, AuditLog, Liability, Investment, InvestmentTransaction, StaffUser } from '../types';
+import { Payment, Customer, Invoice, UserRole, AuditLog, Liability, Investment, InvestmentTransaction, StaffUser, BankAccount } from '../types';
 import { paymentAPI } from '../services/api';
 
 interface AccountsManagerProps {
@@ -20,6 +20,10 @@ interface AccountsManagerProps {
   setInvestments?: React.Dispatch<React.SetStateAction<Investment[]>>;
   incomeCategories?: string[]; // Added Income Categories
   currentUser?: StaffUser | null; // Added currentUser for Permissions
+  openingBalances: { CASH: number; CUB: number; KVB: number; CAPITAL: number; };
+  setOpeningBalances: React.Dispatch<React.SetStateAction<{ CASH: number; CUB: number; KVB: number; CAPITAL: number; }>>;
+  bankAccounts: BankAccount[];
+  setBankAccounts: React.Dispatch<React.SetStateAction<BankAccount[]>>;
 }
 
 type PurposeType = 'ROYALTY' | 'INTEREST' | 'CHIT' | 'PRINCIPAL_RECOVERY' | 'GENERAL' | 'EXPENSE' | 'TRANSFER' | 'LOAN_INTEREST' | 'LOAN_REPAYMENT' | 'OTHER_BUSINESS' | 'CHIT_SAVINGS' | 'DIRECT_INCOME' | 'SAVINGS';
@@ -27,7 +31,8 @@ type PurposeType = 'ROYALTY' | 'INTEREST' | 'CHIT' | 'PRINCIPAL_RECOVERY' | 'GEN
 const AccountsManager: React.FC<AccountsManagerProps> = ({ 
   payments, setPayments, customers, setCustomers, invoices, setInvoices,
   expenseCategories, otherBusinesses, role, setAuditLogs, liabilities, setLiabilities,
-  investments = [], setInvestments, incomeCategories = [], currentUser
+  investments = [], setInvestments, incomeCategories = [], currentUser,
+  openingBalances, setOpeningBalances, bankAccounts, setBankAccounts
 }) => {
   const [direction, setDirection] = useState<'IN' | 'OUT'>('IN');
   const [purpose, setPurpose] = useState<PurposeType>('GENERAL');
@@ -39,7 +44,7 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
   const [formData, setFormData] = useState<Partial<Payment>>({
     amount: 0,
     mode: 'CASH',
-    targetMode: 'CUB',
+    targetMode: bankAccounts.find(b => b.status === 'ACTIVE')?.name || 'CASH',
     date: Date.now(),
     sourceId: '',
     sourceName: '',
@@ -230,6 +235,43 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
             }
         }));
     }
+    
+    // 5. Reverse Wallet Balance Changes
+    if (payment.category === 'TRANSFER') {
+      // Reverse CONTRA: Add back to source, Deduct from target
+      const sourceMode = payment.mode;
+      const targetMode = payment.targetMode;
+      
+      // Add back to source
+      if (sourceMode === 'CASH') {
+        setOpeningBalances(prev => ({ ...prev, CASH: prev.CASH + payment.amount }));
+      } else {
+        setBankAccounts(prev => prev.map(b => 
+          b.name === sourceMode ? { ...b, openingBalance: b.openingBalance + payment.amount } : b
+        ));
+      }
+      
+      // Deduct from target
+      if (targetMode === 'CASH') {
+        setOpeningBalances(prev => ({ ...prev, CASH: prev.CASH - payment.amount }));
+      } else {
+        setBankAccounts(prev => prev.map(b => 
+          b.name === targetMode ? { ...b, openingBalance: b.openingBalance - payment.amount } : b
+        ));
+      }
+    } else {
+      // Reverse regular Receipt/Payment
+      const paymentMode = payment.mode;
+      const amountChange = payment.type === 'IN' ? -payment.amount : payment.amount; // Reverse the direction
+      
+      if (paymentMode === 'CASH') {
+        setOpeningBalances(prev => ({ ...prev, CASH: prev.CASH + amountChange }));
+      } else {
+        setBankAccounts(prev => prev.map(b => 
+          b.name === paymentMode ? { ...b, openingBalance: b.openingBalance + amountChange } : b
+        ));
+      }
+    }
   };
 
   const handleDelete = async (id: string) => {
@@ -282,9 +324,14 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
       id: editingId || Math.random().toString(36).substr(2, 9),
       type: direction,
       voucherType: purpose === 'TRANSFER' ? 'CONTRA' : (direction === 'IN' ? 'RECEIPT' : 'PAYMENT'),
-      category: purpose,
+      category: purpose === 'EXPENSE' ? formData.sourceId : 
+                purpose === 'DIRECT_INCOME' ? formData.sourceId?.replace('INC_', '') : 
+                purpose === 'OTHER_BUSINESS' ? formData.businessUnit || formData.sourceName :
+                purpose,
       date: new Date(formData.date!).getTime()
     };
+    
+    console.log('Creating payment:', { purpose, sourceId: formData.sourceId, businessUnit: formData.businessUnit, sourceName: formData.sourceName, category: newPayment.category, type: newPayment.type, voucherType: newPayment.voucherType });
 
     // --- AUTO-LEDGERING LOGIC (APPLY NEW EFFECTS) ---
 
@@ -353,15 +400,62 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
         }
     }
 
-    try {
-      // Save or update payment via API
-      if (editingId) {
-        await paymentAPI.update(editingId, newPayment);
+    // --- UPDATE WALLET BALANCES ---
+    if (purpose === 'TRANSFER') {
+      // CONTRA Transfer: Deduct from source, Add to target
+      const sourceMode = newPayment.mode;
+      const targetMode = newPayment.targetMode;
+      
+      // Deduct from source
+      if (sourceMode === 'CASH') {
+        setOpeningBalances(prev => ({ ...prev, CASH: prev.CASH - newPayment.amount }));
       } else {
-        await paymentAPI.create(newPayment);
+        setBankAccounts(prev => prev.map(b => 
+          b.name === sourceMode ? { ...b, openingBalance: b.openingBalance - newPayment.amount } : b
+        ));
       }
       
-      setPayments(prev => [newPayment, ...prev]);
+      // Add to target
+      if (targetMode === 'CASH') {
+        setOpeningBalances(prev => ({ ...prev, CASH: prev.CASH + newPayment.amount }));
+      } else {
+        setBankAccounts(prev => prev.map(b => 
+          b.name === targetMode ? { ...b, openingBalance: b.openingBalance + newPayment.amount } : b
+        ));
+      }
+    } else {
+      // Regular Receipt/Payment: Update the selected mode balance
+      const paymentMode = newPayment.mode;
+      const amountChange = direction === 'IN' ? newPayment.amount : -newPayment.amount;
+      
+      if (paymentMode === 'CASH') {
+        setOpeningBalances(prev => ({ ...prev, CASH: prev.CASH + amountChange }));
+      } else {
+        setBankAccounts(prev => prev.map(b => 
+          b.name === paymentMode ? { ...b, openingBalance: b.openingBalance + amountChange } : b
+        ));
+      }
+    }
+
+    try {
+      // Save or update payment via API
+      console.log('=== SAVING PAYMENT TO API ===');
+      console.log('Editing ID:', editingId);
+      console.log('Payment data:', JSON.stringify(newPayment, null, 2));
+      
+      if (editingId) {
+        const response = await paymentAPI.update(editingId, newPayment);
+        console.log('Update API response:', response);
+        setPayments(prev => prev.map(p => p.id === editingId ? newPayment : p));
+      } else {
+        const response = await paymentAPI.create(newPayment);
+        console.log('Create API response:', response);
+        setPayments(prev => {
+          const updated = [newPayment, ...prev];
+          console.log('Adding payment to local state. New length:', updated.length);
+          return updated;
+        });
+      }
       
       // Reset Form
       setFormData({ ...formData, amount: 0, notes: '' });
@@ -370,7 +464,8 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
       setEditingId(null);
       alert(editingId ? "Voucher Updated Successfully" : "Voucher Saved Successfully");
     } catch (error) {
-      console.error('Failed to save payment:', error);
+      console.error('=== PAYMENT SAVE FAILED ===');
+      console.error('Error details:', error);
       alert('Failed to save payment. Please try again.');
     }
   };
@@ -579,8 +674,9 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
                     <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Payment Mode</label>
                     <select className="w-full border-2 border-slate-100 p-4 rounded-2xl bg-white text-xs font-black uppercase outline-none focus:border-indigo-500" value={formData.mode} onChange={e => setFormData({...formData, mode: e.target.value as any})}>
                       <option value="CASH">Cash Drawer</option>
-                      <option value="CUB">CUB Bank</option>
-                      <option value="KVB">KVB Bank</option>
+                      {bankAccounts.filter(b => b.status === 'ACTIVE').map(bank => (
+                        <option key={bank.id} value={bank.name}>{bank.name}</option>
+                      ))}
                     </select>
                  </div>
                  {purpose === 'TRANSFER' && (
@@ -588,8 +684,9 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
                       <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Target Account</label>
                       <select className="w-full border-2 border-slate-100 p-4 rounded-2xl bg-white text-xs font-black uppercase outline-none focus:border-indigo-500" value={formData.targetMode} onChange={e => setFormData({...formData, targetMode: e.target.value as any})}>
                         <option value="CASH">Cash Drawer</option>
-                        <option value="CUB">CUB Bank</option>
-                        <option value="KVB">KVB Bank</option>
+                        {bankAccounts.filter(b => b.status === 'ACTIVE').map(bank => (
+                          <option key={bank.id} value={bank.name}>{bank.name}</option>
+                        ))}
                       </select>
                    </div>
                  )}
