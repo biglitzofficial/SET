@@ -206,6 +206,87 @@ router.post('/:id/void', [
   }
 });
 
+// Bulk create invoices (Firestore WriteBatch — single round-trip, much faster than N sequential calls)
+router.post('/bulk', [
+  authenticate,
+  checkPermission('canEdit')
+], async (req, res) => {
+  try {
+    const { invoices } = req.body;
+    if (!invoices?.length) {
+      return res.status(400).json({ error: { message: 'No invoices provided' } });
+    }
+
+    const batch = db.batch();
+    const results = [];
+    const now = Date.now();
+
+    for (const invoice of invoices) {
+      const docRef = db.collection(COLLECTIONS.INVOICES).doc();
+      const { id: _id, ...invoiceData } = invoice; // strip any client-side id
+      const data = { ...invoiceData, isVoid: false, createdAt: now, createdBy: req.user.id };
+      batch.set(docRef, data);
+      results.push({ id: docRef.id, ...data });
+    }
+
+    await batch.commit();
+
+    await db.collection(COLLECTIONS.AUDIT_LOGS).add({
+      timestamp: now,
+      action: 'BULK_CREATE',
+      entityType: 'INVOICE',
+      entityId: 'BATCH',
+      description: `Bulk created ${results.length} invoices`,
+      performedBy: req.user.role,
+      userId: req.user.id
+    });
+
+    res.status(201).json({ invoices: results, count: results.length });
+  } catch (error) {
+    console.error('Bulk create invoices error:', error);
+    res.status(500).json({ error: { message: 'Failed to bulk create invoices' } });
+  }
+});
+
+// Bulk delete invoices
+router.post('/bulk-delete', [
+  authenticate,
+  checkPermission('canDelete')
+], async (req, res) => {
+  try {
+    const { ids } = req.body;
+    if (!ids?.length) {
+      return res.status(400).json({ error: { message: 'No IDs provided' } });
+    }
+
+    // Firestore batch max is 500; chunk if needed
+    const chunkSize = 500;
+    for (let i = 0; i < ids.length; i += chunkSize) {
+      const chunk = ids.slice(i, i + chunkSize);
+      const writeBatch = db.batch();
+      for (const id of chunk) {
+        writeBatch.delete(db.collection(COLLECTIONS.INVOICES).doc(id));
+      }
+      await writeBatch.commit();
+    }
+
+    await db.collection(COLLECTIONS.AUDIT_LOGS).add({
+      timestamp: Date.now(),
+      action: 'BULK_DELETE',
+      entityType: 'INVOICE',
+      entityId: 'BATCH',
+      description: `Bulk deleted ${ids.length} invoices`,
+      performedBy: req.user.role,
+      userId: req.user.id
+    });
+
+    res.json({ message: `Deleted ${ids.length} invoices`, count: ids.length });
+  } catch (error) {
+    console.error('Bulk delete invoices error:', error);
+    res.status(500).json({ error: { message: 'Failed to bulk delete invoices' } });
+  }
+});
+
 // Delete invoice
 router.delete('/:id', [
   authenticate,

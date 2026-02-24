@@ -26,6 +26,7 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
 
   // Form State
   const [showForm, setShowForm] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [showMemberSelector, setShowMemberSelector] = useState(false);
 
@@ -99,6 +100,8 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
   // --- LOGIC: SAVING CHIT GROUP ---
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
+    setIsSubmitting(true);
     try {
       if (isEditing) {
         await chitAPI.update(formData.id, formData);
@@ -115,6 +118,8 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
     } catch (error) {
       console.error('Failed to save chit group:', error);
       alert('Failed to save chit group. Please try again.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -520,10 +525,10 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
                  </div>
                  
                  <div className="lg:hidden p-4 bg-white border-t border-slate-100">
-                    <button type="submit" className="w-full py-3 bg-slate-900 text-white rounded-2xl font-black uppercase tracking-widest shadow-xl">Save Group</button>
+                    <button type="submit" disabled={isSubmitting} className="w-full py-3 bg-slate-900 text-white rounded-2xl font-black uppercase tracking-widest shadow-xl disabled:opacity-60 disabled:cursor-not-allowed">{isSubmitting ? <><i className="fas fa-spinner fa-spin mr-2"></i>Saving...</> : 'Save Group'}</button>
                  </div>
                  <div className="hidden lg:flex p-4 border-t border-slate-100 items-center justify-end bg-white w-full lg:w-auto lg:absolute lg:bottom-0 lg:right-0 lg:left-0 pointer-events-none">
-                    <button type="submit" className="w-full lg:w-auto px-12 py-3 bg-slate-900 text-white rounded-2xl font-black uppercase tracking-widest shadow-xl hover:scale-105 transition pointer-events-auto">Commit Configuration</button>
+                    <button type="submit" disabled={isSubmitting} className="w-full lg:w-auto px-12 py-3 bg-slate-900 text-white rounded-2xl font-black uppercase tracking-widest shadow-xl hover:scale-105 transition pointer-events-auto disabled:opacity-60 disabled:cursor-not-allowed disabled:scale-100">{isSubmitting ? <><i className="fas fa-spinner fa-spin mr-2"></i>Saving...</> : 'Commit Configuration'}</button>
                  </div>
               </form>
            </div>

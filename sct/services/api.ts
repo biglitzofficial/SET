@@ -114,6 +114,18 @@ export const invoiceAPI = {
     apiRequest<void>(`/invoices/${id}`, {
       method: 'DELETE',
     }),
+
+  bulkCreate: (invoices: any[]) =>
+    apiRequest<{ invoices: any[]; count: number }>('/invoices/bulk', {
+      method: 'POST',
+      body: JSON.stringify({ invoices }),
+    }),
+
+  bulkDelete: (ids: string[]) =>
+    apiRequest<{ count: number }>('/invoices/bulk-delete', {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
+    }),
 };
 
 // Payment API
@@ -275,6 +287,12 @@ export const dueDatesAPI = {
   delete: (id: string, category: string) =>
     apiRequest<void>(`/due-dates/${id}/${category}`, {
       method: 'DELETE',
+    }),
+
+  bulkUpsert: (items: { id: string; category: string; dueDate: number; amount: number }[]) =>
+    apiRequest<{ count: number }>('/due-dates/bulk', {
+      method: 'POST',
+      body: JSON.stringify({ items }),
     }),
 };
 

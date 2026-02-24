@@ -20,6 +20,9 @@ type BatchType = 'ROYALTY' | 'INTEREST' | 'CHIT' | 'INTEREST_OUT';
 const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, customers, chitGroups, setChitGroups, liabilities, role, setAuditLogs, currentUser }) => {
   
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [deletingInvoiceId, setDeletingInvoiceId] = useState<string | null>(null);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [isConfirming, setIsConfirming] = useState(false);
 
   // Load invoices from backend
   useEffect(() => {
@@ -46,6 +49,34 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
   const [chitBidAmount, setChitBidAmount] = useState<number>(0);
   const [chitWinnerId, setChitWinnerId] = useState<string>('');
   
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+
+  const toggleSelect = (id: string) => setSelectedIds(prev => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+
+  const toggleSelectAll = (ids: string[]) => setSelectedIds(prev =>
+    prev.size === ids.length ? new Set() : new Set(ids)
+  );
+
+  const handleBulkDelete = async () => {
+    if (isBulkDeleting || selectedIds.size === 0) return;
+    if (!window.confirm(`Delete ${selectedIds.size} selected invoice${selectedIds.size > 1 ? 's' : ''}? This cannot be undone.`)) return;
+    setIsBulkDeleting(true);
+    try {
+      await invoiceAPI.bulkDelete([...selectedIds]);
+      setInvoices(prev => prev.filter(inv => !selectedIds.has(inv.id)));
+      setSelectedIds(new Set());
+    } catch (error: any) {
+      alert(`Failed to delete invoices: ${error?.message || 'Please try again.'}`);
+    } finally {
+      setIsBulkDeleting(false);
+    }
+  };
+
   const [billingDate, setBillingDate] = useState(() => new Date().toISOString().substr(0, 10));
   const [dueDate, setDueDate] = useState(() => {
     // Default to 3 days from today
@@ -151,6 +182,8 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
   // --- BATCH GENERATOR LOGIC ---
   const generatePreviewBatch = async () => {
     if (!activeBatchType) return;
+    if (isGenerating) return;
+    setIsGenerating(true);
     
     const date = new Date(billingDate).getTime();
     const batch: Invoice[] = [];
@@ -246,6 +279,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
       const group = chitGroups.find(g => g.id === selectedChitForBilling);
       if (!group || !chitWinnerId || !chitCalc || chitCalc.error) { 
         alert("Please select a group and valid winner first."); 
+        setIsGenerating(false);
         return; 
       }
       
@@ -286,6 +320,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
           console.error('Failed to reload chit groups:', e);
           alert('❌ Failed to reload chit groups from the database. Please refresh the page and try again.');
         }
+        setIsGenerating(false);
         return;
       }
 
@@ -293,6 +328,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
       const seqMonth = group.auctions.length + 1;
       if (group.auctions.some(a => a.month === seqMonth)) {
          alert(`Error: Auction for Sequence Month #${seqMonth} already exists.`);
+         setIsGenerating(false);
          return;
       }
 
@@ -304,6 +340,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
 
       if (alreadyHasAuctionThisMonth) {
          if (!window.confirm(`WARNING: An auction has already been conducted in ${billingDateObj.toLocaleString('default', { month: 'long', year: 'numeric' })}. Are you sure you want to conduct another bid in the same month?`)) {
+            setIsGenerating(false);
             return;
          }
       }
@@ -351,12 +388,15 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
     } else {
       alert(`No valid records found for ${activeBatchType} batch.`);
     }
+    setIsGenerating(false);
   };
 
   const confirmBatch = async () => {
-    if (reviewBatch) {
-      
-      let finalBatch = [...reviewBatch];
+    if (isConfirming) return;
+    if (!reviewBatch) return;
+    setIsConfirming(true);
+    
+    let finalBatch = [...reviewBatch];
       
       // FOR CHIT: Generate a unique Auction ID and tag all invoices
       if (activeBatchType === 'CHIT' && selectedChitForBilling) {
@@ -366,6 +406,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
           console.error('Chit group not found in local state:', selectedChitForBilling);
           console.log('Available chit groups:', chitGroups.map(g => ({ id: g.id, name: g.name })));
           alert(`Error: Chit group not found (ID: ${selectedChitForBilling}). Please refresh the page and try again.`);
+          setIsConfirming(false);
           return;
         }
         
@@ -405,87 +446,43 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
           console.error('Failed to record chit auction:', error);
           console.error('Error details:', error.message);
           alert(`Failed to record chit auction: ${error.message}. Please make sure the chit group exists and try again.`);
+          setIsConfirming(false);
           return;
         }
       }
 
       try {
-        // Save all invoices to backend sequentially to avoid rate limiting
-        const createdInvoices: Invoice[] = [];
-        
-        for (let i = 0; i < finalBatch.length; i++) {
-          const invoice = finalBatch[i];
-          const createdInvoice = await invoiceAPI.create(invoice);
-          createdInvoices.push(createdInvoice);
-          
-          // Small delay between each invoice to avoid rate limiting
-          if (i < finalBatch.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 100));
-          }
-        }
-        
+        // BULK CREATE: single Firestore WriteBatch — replaces N sequential HTTP calls
+        const result = await invoiceAPI.bulkCreate(finalBatch);
+        const createdInvoices: Invoice[] = result.invoices;
         setInvoices(prev => [...prev, ...createdInvoices]);
-        
-        // Set due dates to the selected due date for all created invoices
+
+        // Build all due date items and bulk upsert in one request
         const dueDateTimestamp = new Date(dueDate).getTime();
-        console.log(`Setting due dates for ${createdInvoices.length} invoices. Due date:`, new Date(dueDateTimestamp).toLocaleString());
-        
-        for (let i = 0; i < createdInvoices.length; i++) {
-          const invoice = createdInvoices[i];
-          
-          if (!invoice.customerId) {
-            console.warn(`Invoice ${invoice.id} has no customerId, skipping due date`);
-            continue;
-          }
-          
-          // Map invoice type to category for due dates
+        const dueDateItems: { id: string; category: string; dueDate: number; amount: number }[] = [];
+        for (const invoice of createdInvoices) {
+          if (!invoice.customerId) continue;
           let category = 'ALL';
           if (invoice.type === 'ROYALTY') category = 'ROYALTY';
           else if (invoice.type === 'INTEREST') category = 'INTEREST';
           else if (invoice.type === 'INTEREST_OUT') category = 'INTEREST_OUT';
           else if (invoice.type === 'CHIT') category = 'CHIT';
-          
-          console.log(`Setting due date for invoice ${invoice.id}, customer: ${invoice.customerId}, type: ${invoice.type}, category: ${category}, amount: ${invoice.balance}`);
-          
-          try {
-            // Save category-specific due date
-            const categoryDueDateData = {
-              id: invoice.customerId,
-              category: category,
-              dueDate: dueDateTimestamp,
-              amount: invoice.balance
-            };
-            console.log('Sending category due date data:', categoryDueDateData);
-            await dueDatesAPI.upsert(categoryDueDateData);
-            
-            // Also save a general 'ALL' due date for Outstanding Tracker
-            const allDueDateData = {
-              id: invoice.customerId,
-              category: 'ALL',
-              dueDate: dueDateTimestamp,
-              amount: invoice.balance
-            };
-            await dueDatesAPI.upsert(allDueDateData);
-            
-            console.log(`Due dates saved successfully for ${invoice.customerName} in ${category} and ALL`);
-          } catch (err: any) {
-            console.error(`Failed to set due date for invoice ${invoice.id}:`, err);
-            console.error('Error message:', err.message);
-            // Don't block on due date failures
-          }
-          
-          if (i < createdInvoices.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 150));
-          }
+          // category-specific entry
+          dueDateItems.push({ id: invoice.customerId, category, dueDate: dueDateTimestamp, amount: invoice.balance });
+          // always update the ALL bucket too
+          if (category !== 'ALL') dueDateItems.push({ id: invoice.customerId, category: 'ALL', dueDate: dueDateTimestamp, amount: invoice.balance });
         }
-        
-        console.log('All due dates processed');
+        if (dueDateItems.length > 0) {
+          try { await dueDatesAPI.bulkUpsert(dueDateItems); } catch (e) { console.error('Due dates bulk save failed (non-blocking):', e); }
+        }
+
         closeModal();
       } catch (error) {
         console.error('Failed to create invoices:', error);
         alert('Failed to create invoices. Please try again.');
+      } finally {
+        setIsConfirming(false);
       }
-    }
   };
 
   const closeModal = () => {
@@ -526,14 +523,17 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
   };
 
   const handleDeleteInvoice = async (id: string) => {
-     if (window.confirm("Are you sure you want to void/delete this invoice?")) {
-        try {
-          await invoiceAPI.delete(id);
-          setInvoices(prev => prev.filter(i => i.id !== id));
-        } catch (error) {
-          console.error('Failed to delete invoice:', error);
-          alert('Failed to delete invoice. Please try again.');
-        }
+     if (deletingInvoiceId) return;
+     if (!window.confirm("Are you sure you want to void/delete this invoice?")) return;
+     setDeletingInvoiceId(id);
+     try {
+       await invoiceAPI.delete(id);
+       setInvoices(prev => prev.filter(i => i.id !== id));
+     } catch (error) {
+       console.error('Failed to delete invoice:', error);
+       alert('Failed to delete invoice. Please try again.');
+     } finally {
+       setDeletingInvoiceId(null);
      }
   };
 
@@ -691,10 +691,39 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
 
       {/* DATA TABLE */}
       <div className="bg-white rounded-[1.5rem] overflow-hidden shadow-lg border border-slate-200">
+         {/* BULK ACTION BAR */}
+         {selectedIds.size > 0 && (
+           <div className="px-8 py-3 bg-rose-50 border-b border-rose-200 flex items-center justify-between">
+             <span className="text-xs font-black text-rose-700">
+               <i className="fas fa-check-square mr-2"></i>
+               {selectedIds.size} invoice{selectedIds.size > 1 ? 's' : ''} selected
+             </span>
+             <div className="flex items-center gap-3">
+               <button onClick={() => setSelectedIds(new Set())} className="text-xs font-bold text-slate-500 hover:text-slate-700 underline">Clear</button>
+               <button
+                 onClick={handleBulkDelete}
+                 disabled={isBulkDeleting}
+                 className="px-5 py-2 bg-rose-600 text-white text-xs font-black uppercase tracking-widest rounded-xl hover:bg-rose-700 shadow-sm transition disabled:opacity-60 disabled:cursor-not-allowed"
+               >
+                 {isBulkDeleting
+                   ? <><i className="fas fa-spinner fa-spin mr-1"></i>Deleting...</>
+                   : <><i className="fas fa-trash-alt mr-1"></i>Delete {selectedIds.size} Selected</>}
+               </button>
+             </div>
+           </div>
+         )}
          <div className="overflow-x-auto">
          <table className="min-w-full">
             <thead className="bg-dark-900 text-white">
                <tr>
+                  <th className="px-4 py-6 text-center w-12">
+                    <input
+                      type="checkbox"
+                      className="rounded cursor-pointer accent-indigo-500"
+                      checked={filteredInvoices.length > 0 && selectedIds.size === filteredInvoices.length}
+                      onChange={() => toggleSelectAll(filteredInvoices.map(i => i.id))}
+                    />
+                  </th>
                   <th className="px-8 py-6 text-left text-[10px] font-black uppercase tracking-widest opacity-80">Date</th>
                   <th className="px-8 py-6 text-left text-[10px] font-black uppercase tracking-widest opacity-80">Voucher</th>
                   <th className="px-8 py-6 text-left text-[10px] font-black uppercase tracking-widest opacity-80">Stakeholder</th>
@@ -705,7 +734,15 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
             </thead>
             <tbody className="divide-y divide-slate-100">
                {filteredInvoices.map((inv, idx) => (
-                  <tr key={inv.id} className="hover:bg-slate-50 transition-colors group">
+                  <tr key={inv.id} className={`hover:bg-slate-50 transition-colors group ${selectedIds.has(inv.id) ? 'bg-indigo-50' : ''}`}>
+                     <td className="px-4 py-6 text-center">
+                       <input
+                         type="checkbox"
+                         className="rounded cursor-pointer accent-indigo-500"
+                         checked={selectedIds.has(inv.id)}
+                         onChange={() => toggleSelect(inv.id)}
+                       />
+                     </td>
                      <td className="px-8 py-6 whitespace-nowrap text-xs font-bold text-slate-500">{new Date(inv.date).toLocaleDateString()}</td>
                      <td className="px-8 py-6 whitespace-nowrap">
                         <div className="flex items-center gap-3">
@@ -729,8 +766,10 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
                      </td>
                      <td className="px-8 py-6 whitespace-nowrap text-right">
                         {currentUser?.permissions.canDelete && (
-                           <button onClick={() => handleDeleteInvoice(inv.id)} className="h-10 w-10 bg-slate-100 rounded-full flex items-center justify-center text-slate-400 hover:bg-rose-100 hover:text-rose-600 transition-colors">
-                              <i className="fas fa-trash-alt text-xs"></i>
+                           <button onClick={() => handleDeleteInvoice(inv.id)} disabled={deletingInvoiceId === inv.id} className="h-10 w-10 bg-slate-100 rounded-full flex items-center justify-center text-slate-400 hover:bg-rose-100 hover:text-rose-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                              {deletingInvoiceId === inv.id
+                                ? <i className="fas fa-spinner fa-spin text-xs"></i>
+                                : <i className="fas fa-trash-alt text-xs"></i>}
                            </button>
                         )}
                      </td>
@@ -738,7 +777,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
                ))}
                {filteredInvoices.length === 0 && (
                   <tr>
-                     <td colSpan={6} className="px-8 py-20 text-center">
+                     <td colSpan={7} className="px-8 py-20 text-center">
                         <div className="h-16 w-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4">
                            <i className="fas fa-search text-slate-300 text-2xl"></i>
                         </div>
@@ -754,7 +793,18 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
       {/* BULK GENERATION MODAL */}
       {activeBatchType && (
         <div className="fixed inset-0 bg-slate-900 bg-opacity-90 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
-           <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-2xl overflow-hidden animate-scaleUp">
+           <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-2xl overflow-hidden animate-scaleUp relative">
+              {/* POSTING OVERLAY */}
+              {isConfirming && (
+                <div className="absolute inset-0 bg-white/95 backdrop-blur-sm flex flex-col items-center justify-center z-20 rounded-[2rem]">
+                  <div className="h-16 w-16 rounded-full bg-indigo-100 flex items-center justify-center mb-5">
+                    <i className="fas fa-spinner fa-spin text-indigo-600 text-2xl"></i>
+                  </div>
+                  <div className="text-base font-black text-slate-800 uppercase tracking-widest">Posting {reviewBatch?.length} Invoices</div>
+                  <div className="text-xs text-slate-400 mt-2">Saving to database, please wait...</div>
+                  <div className="mt-5 text-[10px] font-bold text-rose-500 uppercase tracking-widest">Do not close or click again</div>
+                </div>
+              )}
               <div className="px-8 py-6 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
                  <h3 className="text-xl font-black text-slate-800 uppercase italic tracking-tighter">{getModalTitle()}</h3>
                  <button onClick={closeModal} className="h-10 w-10 bg-white rounded-full shadow-sm flex items-center justify-center text-slate-400 hover:text-rose-500 transition"><i className="fas fa-times"></i></button>
@@ -861,8 +911,8 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
                         </div>
                       )}
                       
-                      <button onClick={generatePreviewBatch} className="w-full bg-slate-900 text-white py-4 rounded-2xl font-black uppercase tracking-widest hover:bg-slate-800 hover:scale-[1.02] transition-all shadow-xl">
-                         Generate Preview
+                      <button onClick={generatePreviewBatch} disabled={isGenerating} className="w-full bg-slate-900 text-white py-4 rounded-2xl font-black uppercase tracking-widest hover:bg-slate-800 hover:scale-[1.02] transition-all shadow-xl disabled:opacity-60 disabled:cursor-not-allowed disabled:scale-100">
+                         {isGenerating ? <><i className="fas fa-spinner fa-spin mr-2"></i>Generating...</> : 'Generate Preview'}
                       </button>
                    </div>
                  ) : (
@@ -895,7 +945,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
                       </div>
                       <div className="flex justify-end gap-4">
                         <button onClick={() => setReviewBatch(null)} className="px-6 py-3 border-2 border-slate-200 rounded-xl text-xs font-black text-slate-500 uppercase tracking-widest hover:bg-slate-50">Back</button>
-                        <button onClick={confirmBatch} className="px-8 py-3 bg-indigo-600 text-white rounded-xl text-xs font-black uppercase tracking-widest hover:bg-indigo-700 shadow-lg">Confirm & Post</button>
+                        <button onClick={confirmBatch} disabled={isConfirming} className="px-8 py-3 bg-indigo-600 text-white rounded-xl text-xs font-black uppercase tracking-widest hover:bg-indigo-700 shadow-lg disabled:opacity-60 disabled:cursor-not-allowed">{isConfirming ? <><i className="fas fa-spinner fa-spin mr-2"></i>Posting...</> : 'Confirm & Post'}</button>
                       </div>
                    </div>
                  )}

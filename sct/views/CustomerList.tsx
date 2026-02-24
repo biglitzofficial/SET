@@ -20,6 +20,8 @@ type ViewType = 'ALL' | 'ROYALTY' | 'INTEREST' | 'CHIT' | 'GENERAL' | 'CREDITOR'
 const CustomerList: React.FC<CustomerListProps> = ({ customers, setCustomers, invoices, payments, setAuditLogs, currentUser }) => {
   const [searchParams] = useSearchParams();
   const [showForm, setShowForm] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
   
   // Filter & Sort State
@@ -149,18 +151,26 @@ const CustomerList: React.FC<CustomerListProps> = ({ customers, setCustomers, in
   };
 
   const handleDeleteCustomer = async (customer: Customer) => {
+    if (deletingId) return;
     if (!window.confirm(`Delete "${customer.name}" from the registry?\n\nThis cannot be undone.`)) return;
 
+    setDeletingId(customer.id);
+    let success = false;
     try {
       await customerAPI.delete(customer.id);
+      success = true;
     } catch (error: any) {
       // 404 means the customer doesn't exist in the database anyway —
       // still remove it from the UI so stale entries can be cleaned up.
       if (!error?.message?.toLowerCase().includes('not found') && !error?.message?.includes('404')) {
         alert(`Failed to delete customer: ${error?.message || 'Please try again.'}`);
-        return;
+      } else {
+        success = true;
       }
+    } finally {
+      setDeletingId(null);
     }
+    if (!success) return;
 
     // Remove from UI state (whether delete succeeded or was already gone)
     setCustomers(prev => prev.filter(c => c.id !== customer.id));
@@ -209,6 +219,9 @@ const CustomerList: React.FC<CustomerListProps> = ({ customers, setCustomers, in
       alert("Please select at least one role for this account.");
       return;
     }
+
+    if (isSubmitting) return;
+    setIsSubmitting(true);
 
     // Validation: Check for duplicate phone number or user ID
     if (!editingCustomer) {
@@ -324,6 +337,8 @@ const CustomerList: React.FC<CustomerListProps> = ({ customers, setCustomers, in
       console.error('Failed to save customer:', error);
       const errorMessage = error?.message || 'Failed to save customer. Please try again.';
       alert(`Error: ${errorMessage}\n\nCustomer ID: ${editingCustomer?.id || 'N/A'}\nPlease check the console for more details.`);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -509,10 +524,11 @@ const CustomerList: React.FC<CustomerListProps> = ({ customers, setCustomers, in
                        </button>
                        <button 
                          onClick={() => handleDeleteCustomer(customer)} 
-                         className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all duration-200"
+                         disabled={deletingId === customer.id}
+                         className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
                          title="Delete customer"
                        >
-                         <i className="fas fa-trash"></i>
+                         {deletingId === customer.id ? <i className="fas fa-spinner fa-spin text-rose-400"></i> : <i className="fas fa-trash"></i>}
                        </button>
                      </div>
                   </td>
@@ -703,7 +719,7 @@ const CustomerList: React.FC<CustomerListProps> = ({ customers, setCustomers, in
 
               <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
                  <button type="button" onClick={() => setShowForm(false)} className="px-6 py-3 rounded-xl text-xs font-black text-slate-500 uppercase tracking-widest hover:bg-slate-50">Cancel</button>
-                 <button data-testid="btn-save-customer" type="submit" className="px-8 py-3 bg-slate-900 text-white rounded-xl text-xs font-black uppercase tracking-widest hover:bg-slate-800 shadow-lg hover:scale-105 transition-all">Save Account</button>
+                 <button data-testid="btn-save-customer" type="submit" disabled={isSubmitting} className="px-8 py-3 bg-slate-900 text-white rounded-xl text-xs font-black uppercase tracking-widest hover:bg-slate-800 shadow-lg hover:scale-105 transition-all disabled:opacity-60 disabled:cursor-not-allowed disabled:scale-100">{isSubmitting ? <><i className="fas fa-spinner fa-spin mr-2"></i>Saving...</> : 'Save Account'}</button>
               </div>
             </form>
             </div>

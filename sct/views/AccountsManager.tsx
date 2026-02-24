@@ -40,6 +40,8 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
   const [showResults, setShowResults] = useState(false);
   const [selectedParty, setSelectedParty] = useState<any>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   
   const [formData, setFormData] = useState<Partial<Payment>>({
     amount: 0,
@@ -275,18 +277,20 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
   };
 
   const handleDelete = async (id: string) => {
-    if (window.confirm("Are you sure you want to delete this voucher? This will reverse related ledger entries.")) {
-       const paymentToDelete = payments.find(p => p.id === id);
-       if (paymentToDelete) {
-          try {
-            reverseSideEffects(paymentToDelete);
-            await paymentAPI.delete(id);
-            setPayments(prev => prev.filter(p => p.id !== id));
-          } catch (error) {
-            console.error('Failed to delete payment:', error);
-            alert('Failed to delete payment. Please try again.');
-          }
-       }
+    if (deletingId) return;
+    if (!window.confirm("Are you sure you want to delete this voucher? This will reverse related ledger entries.")) return;
+    const paymentToDelete = payments.find(p => p.id === id);
+    if (!paymentToDelete) return;
+    setDeletingId(id);
+    try {
+      reverseSideEffects(paymentToDelete);
+      await paymentAPI.delete(id);
+      setPayments(prev => prev.filter(p => p.id !== id));
+    } catch (error) {
+      console.error('Failed to delete payment:', error);
+      alert('Failed to delete payment. Please try again.');
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -311,6 +315,8 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.amount || !formData.sourceName) return;
+    if (isSubmitting) return;
+    setIsSubmitting(true);
 
     // If Editing, Delete original first (Reverse effects)
     if (editingId) {
@@ -467,6 +473,8 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
       console.error('=== PAYMENT SAVE FAILED ===');
       console.error('Error details:', error);
       alert('Failed to save payment. Please try again.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -701,8 +709,8 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
            </div>
 
            <div className="mt-8 pt-8 border-t border-slate-100">
-              <button data-testid="btn-save-voucher" className="w-full bg-slate-900 text-white py-5 rounded-2xl font-black uppercase tracking-widest hover:bg-slate-800 shadow-xl hover:scale-[1.01] transition text-sm flex justify-center items-center gap-2">
-                 {editingId ? <><i className="fas fa-save"></i> Update Voucher</> : <><i className="fas fa-check-circle"></i> Post Voucher</>}
+              <button data-testid="btn-save-voucher" disabled={isSubmitting} className="w-full bg-slate-900 text-white py-5 rounded-2xl font-black uppercase tracking-widest hover:bg-slate-800 shadow-xl hover:scale-[1.01] transition text-sm flex justify-center items-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed disabled:scale-100">
+                 {isSubmitting ? <><i className="fas fa-spinner fa-spin"></i> Processing...</> : editingId ? <><i className="fas fa-save"></i> Update Voucher</> : <><i className="fas fa-check-circle"></i> Post Voucher</>}
               </button>
            </div>
         </form>
@@ -746,8 +754,8 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
                                  </button>
                               )}
                               {currentUser?.permissions.canDelete && (
-                                 <button onClick={() => handleDelete(p.id)} className="h-8 w-8 rounded-full bg-rose-50 text-rose-600 flex items-center justify-center hover:bg-rose-600 hover:text-white transition">
-                                    <i className="fas fa-trash-alt text-xs"></i>
+                                 <button onClick={() => handleDelete(p.id)} disabled={deletingId === p.id} className="h-8 w-8 rounded-full bg-rose-50 text-rose-600 flex items-center justify-center hover:bg-rose-600 hover:text-white transition disabled:opacity-50 disabled:cursor-not-allowed">
+                                    {deletingId === p.id ? <i className="fas fa-spinner fa-spin text-xs"></i> : <i className="fas fa-trash-alt text-xs"></i>}
                                  </button>
                               )}
                            </div>

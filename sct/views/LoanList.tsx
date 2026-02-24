@@ -15,6 +15,7 @@ interface LoanListProps {
 
 const LoanList: React.FC<LoanListProps> = ({ liabilities, setLiabilities, customers, setCustomers, invoices, payments, setPayments }) => {
   const [showAddModal, setShowAddModal] = useState<'BANK' | 'PRIVATE' | 'GIVE' | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   
   // Refined action state to handle both Liability object and Customer object
   const [liabilityAction, setLiabilityAction] = useState<{ item: Liability | Customer, itemType: 'LIABILITY' | 'CUSTOMER', type: 'INTEREST' | 'PRINCIPAL' } | null>(null);
@@ -56,6 +57,8 @@ const LoanList: React.FC<LoanListProps> = ({ liabilities, setLiabilities, custom
 
   const handleAddAction = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
+    setIsSubmitting(true);
     if (showAddModal === 'GIVE') {
        // Adding Lending Asset
        const targetCust = customers.find(c => c.name.toLowerCase() === formData.providerName.toLowerCase());
@@ -105,11 +108,13 @@ const LoanList: React.FC<LoanListProps> = ({ liabilities, setLiabilities, custom
         } catch (error) {
           console.error('Failed to create liability:', error);
           alert('Failed to create liability. Please try again.');
+          setIsSubmitting(false);
           return;
         }
     }
     setShowAddModal(null);
     setFormData(initialForm);
+    setIsSubmitting(false);
   };
 
   const handlePayment = (e: React.FormEvent) => {
@@ -326,7 +331,7 @@ const LoanList: React.FC<LoanListProps> = ({ liabilities, setLiabilities, custom
                  </div>
                  <div className="flex gap-3 pt-4">
                     <button type="button" onClick={() => setShowAddModal(null)} className="flex-1 py-3 text-slate-400 font-black uppercase text-[10px] tracking-widest hover:bg-slate-50 rounded-xl">Cancel</button>
-                    <button type="submit" className="flex-1 py-3 bg-slate-900 text-white rounded-xl font-black uppercase text-[10px] tracking-widest hover:bg-slate-800 shadow-lg">Create</button>
+                    <button type="submit" disabled={isSubmitting} className="flex-1 py-3 bg-slate-900 text-white rounded-xl font-black uppercase text-[10px] tracking-widest hover:bg-slate-800 shadow-lg disabled:opacity-60 disabled:cursor-not-allowed">{isSubmitting ? <><i className="fas fa-spinner fa-spin mr-1"></i>Creating...</> : 'Create'}</button>
                  </div>
               </form>
            </div>

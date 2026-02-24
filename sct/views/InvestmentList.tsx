@@ -13,6 +13,7 @@ interface InvestmentListProps {
 
 const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestments, savingCategories, payments, setPayments }) => {
   const [showForm, setShowForm] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   
   // View Detail State
@@ -74,6 +75,8 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
+    setIsSubmitting(true);
     
     // Auto-calculate maturity for chits
     let finalData = { ...formData };
@@ -102,6 +105,8 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
     } catch (error) {
       console.error('Failed to save investment:', error);
       alert('Failed to save investment. Please try again.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -733,7 +738,7 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
 
               <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
                 <button type="button" onClick={() => setShowForm(false)} className="px-6 py-3 rounded-xl text-xs font-black text-slate-500 uppercase tracking-widest hover:bg-slate-50">Cancel</button>
-                <button type="submit" className="px-8 py-3 bg-blue-600 text-white rounded-xl text-xs font-black uppercase tracking-widest hover:bg-blue-700 shadow-lg">Save Record</button>
+                <button type="submit" disabled={isSubmitting} className="px-8 py-3 bg-blue-600 text-white rounded-xl text-xs font-black uppercase tracking-widest hover:bg-blue-700 shadow-lg disabled:opacity-60 disabled:cursor-not-allowed">{isSubmitting ? <><i className="fas fa-spinner fa-spin mr-2"></i>Saving...</> : 'Save Record'}</button>
               </div>
             </form>
           </div>

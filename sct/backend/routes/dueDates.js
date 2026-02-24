@@ -62,6 +62,38 @@ router.post('/', authenticate, async (req, res) => {
   }
 });
 
+// Bulk upsert due dates (Firestore WriteBatch — much faster than N individual calls)
+router.post('/bulk', authenticate, async (req, res) => {
+  try {
+    const { items } = req.body;
+    if (!items?.length) {
+      return res.status(400).json({ error: { message: 'No items provided' } });
+    }
+
+    const now = Date.now();
+    const chunkSize = 500;
+    for (let i = 0; i < items.length; i += chunkSize) {
+      const chunk = items.slice(i, i + chunkSize);
+      const writeBatch = db.batch();
+      for (const item of chunk) {
+        const { id, category, dueDate, amount } = item;
+        const docId = `${id}_${category}`;
+        writeBatch.set(db.collection(COLLECTIONS.DUE_DATES).doc(docId), {
+          id, category, dueDate, amount,
+          updatedAt: now,
+          updatedBy: req.user.id
+        }, { merge: true });
+      }
+      await writeBatch.commit();
+    }
+
+    res.json({ message: `Saved ${items.length} due dates`, count: items.length });
+  } catch (error) {
+    console.error('Bulk upsert due dates error:', error);
+    res.status(500).json({ error: { message: 'Failed to bulk save due dates' } });
+  }
+});
+
 // Delete a due date
 router.delete('/:id/:category', authenticate, async (req, res) => {
   try {
