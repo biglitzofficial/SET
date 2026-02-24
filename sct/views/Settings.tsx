@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Customer, ChitGroup, Invoice, StaffUser, AuditLog, Payment, Liability, Investment, BankAccount } from '../types';
-import { settingsAPI } from '../services/api';
+import { settingsAPI, customerAPI, paymentAPI, invoiceAPI, liabilityAPI, chitAPI } from '../services/api';
 import * as XLSX from 'xlsx';
 
 interface SettingsProps {
@@ -473,97 +473,159 @@ const Settings: React.FC<SettingsProps> = ({
     }
   };
 
+  const downloadTemplate = (type: string) => {
+    const templates: Record<string, { headers: string[]; sample: any[] }> = {
+      CUSTOMERS: {
+        headers: ['name','phone','isRoyalty','royaltyAmount','isInterest','interestPrincipal','interestRate','isChit','isLender','creditPrincipal','openingBalance','status'],
+        sample: [['ARUN-B40','9043699695','TRUE',5000,'TRUE',750000,2.5,'FALSE','FALSE',0,0,'ACTIVE']]
+      },
+      PAYMENTS: {
+        headers: ['sourceName','amount','type','voucherType','mode','category','date','notes'],
+        sample: [['ARUN-B40',18750,'IN','RECEIPT','CASH','ROYALTY_COLLECTION','2026-02-24','Feb royalty']]
+      },
+      LIABILITIES: {
+        headers: ['providerName','principal','interestRate','startDate','type','notes'],
+        sample: [['BOYS FOUNDATION',800000,2,'2025-04-01','LOAN','Private loan']]
+      },
+    };
+    const t = templates[type];
+    if (!t) return;
+    const ws = XLSX.utils.aoa_to_sheet([t.headers, ...t.sample]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, type);
+    XLSX.writeFile(wb, `template_${type.toLowerCase()}.xlsx`);
+  };
+
   const importDataByType = async (entityType: string, data: any[]) => {
     if (entityType === 'CUSTOMERS') {
-      const customers = data.map(row => ({
-        id: row.id || Math.random().toString(36).substr(2, 9),
-        name: row.name || row.customerName || '',
-        mobile: row.mobile || row.phone || '',
-        email: row.email || '',
-        address: row.address || '',
-        status: (row.status || 'ACTIVE').toUpperCase(),
-        isRoyalty: row.isRoyalty === true || row.isRoyalty === 'true' || false,
-        royaltyAmount: Number(row.royaltyAmount || 0),
-        isInterest: row.isInterest === true || row.isInterest === 'true' || false,
-        interestPrincipal: Number(row.interestPrincipal || 0),
-        interestRate: Number(row.interestRate || 0),
-        isChit: row.isChit === true || row.isChit === 'true' || false,
-        openingBalance: Number(row.openingBalance || 0),
-        createdAt: row.createdAt || Date.now()
-      }));
-      setCustomers(prev => [...prev, ...customers]);
-      setUploadProgress({status: 'success', message: 'Customers imported successfully!', count: customers.length});
-    }
-    
-    else if (entityType === 'PAYMENTS') {
-      const payments = data.map(row => ({
-        id: row.id || Math.random().toString(36).substr(2, 9),
-        type: (row.type || 'IN').toUpperCase(),
-        voucherType: (row.voucherType || 'RECEIPT').toUpperCase(),
-        sourceId: row.sourceId || '',
-        sourceName: row.sourceName || '',
-        amount: Number(row.amount || 0),
-        mode: (row.mode || 'CASH').toUpperCase(),
-        date: row.date || Date.now(),
-        category: row.category || 'GENERAL',
-        notes: row.notes || '',
-        businessUnit: row.businessUnit,
-        createdAt: row.createdAt || Date.now()
-      }));
-      setPayments(prev => [...prev, ...payments]);
-      setUploadProgress({status: 'success', message: 'Payments imported successfully!', count: payments.length});
-    }
-    
-    else if (entityType === 'INVOICES') {
-      const invoices = data.map(row => ({
-        id: row.id || `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        customerId: row.customerId || row.customer || '',
-        customerName: row.customerName || '',
-        type: (row.type || row.invoiceType || 'ROYALTY').toUpperCase(),
-        amount: Number(row.amount || 0),
-        balance: Number(row.balance !== undefined ? row.balance : row.amount || 0),
-        dueDate: row.dueDate || Date.now(),
-        status: (row.status || 'UNPAID').toUpperCase(),
-        direction: (row.direction || 'IN').toUpperCase(),
-        isVoid: row.isVoid === true || row.isVoid === 'true' || false,
-        createdAt: row.createdAt || Date.now()
-      }));
-      setInvoices(prev => [...prev, ...invoices]);
-      setUploadProgress({status: 'success', message: 'Invoices imported successfully!', count: invoices.length});
-    }
-    
-    else if (entityType === 'LIABILITIES') {
-      const liabilities = data.map(row => ({
-        id: row.id || Math.random().toString(36).substr(2, 9),
-        providerName: row.providerName || row.provider || row.lender || '',
-        principal: Number(row.principal || row.loanAmount || 0),
-        interestRate: Number(row.interestRate || row.rate || 0),
-        startDate: row.startDate || Date.now(),
-        status: (row.status || 'ACTIVE').toUpperCase(),
-        type: (row.type || 'LOAN').toUpperCase(),
-        notes: row.notes || '',
-        createdAt: row.createdAt || Date.now()
-      }));
-      if (setLiabilities) {
-        setLiabilities(prev => [...prev, ...liabilities]);
+      const saved: Customer[] = [];
+      let failed = 0;
+      for (const row of data) {
+        try {
+          const payload = {
+            name: row.name || row.customerName || '',
+            phone: String(row.phone || row.mobile || ''),
+            address: row.address || '',
+            status: (row.status || 'ACTIVE').toUpperCase(),
+            isRoyalty: row.isRoyalty === true || row.isRoyalty === 'TRUE' || row.isRoyalty === 'true' || false,
+            royaltyAmount: Number(row.royaltyAmount || 0),
+            isInterest: row.isInterest === true || row.isInterest === 'TRUE' || row.isInterest === 'true' || false,
+            interestPrincipal: Number(row.interestPrincipal || 0),
+            interestRate: Number(row.interestRate || 0),
+            isChit: row.isChit === true || row.isChit === 'TRUE' || row.isChit === 'true' || false,
+            isGeneral: row.isGeneral === true || row.isGeneral === 'TRUE' || row.isGeneral === 'true' || false,
+            isLender: row.isLender === true || row.isLender === 'TRUE' || row.isLender === 'true' || false,
+            creditPrincipal: Number(row.creditPrincipal || 0),
+            openingBalance: Number(row.openingBalance || 0),
+            createdAt: Date.now()
+          };
+          const created = await customerAPI.create(payload);
+          saved.push(created);
+        } catch { failed++; }
       }
-      setUploadProgress({status: 'success', message: 'Liabilities imported successfully!', count: liabilities.length});
+      setCustomers(prev => [...prev, ...saved]);
+      setUploadProgress({status: 'success', message: `Customers saved to database! ${failed > 0 ? `(${failed} failed)` : ''}`, count: saved.length});
     }
-    
+
+    else if (entityType === 'PAYMENTS') {
+      const saved: Payment[] = [];
+      let failed = 0;
+      for (const row of data) {
+        try {
+          const dateVal = row.date ? (isNaN(Number(row.date)) ? new Date(row.date).getTime() : Number(row.date)) : Date.now();
+          const payload = {
+            type: (row.type || 'IN').toUpperCase(),
+            voucherType: (row.voucherType || 'RECEIPT').toUpperCase(),
+            sourceId: row.sourceId || '',
+            sourceName: row.sourceName || '',
+            amount: Number(row.amount || 0),
+            mode: (row.mode || 'CASH').toUpperCase(),
+            date: dateVal,
+            category: row.category || 'GENERAL',
+            notes: row.notes || '',
+            businessUnit: row.businessUnit || null,
+            createdAt: Date.now()
+          };
+          const created = await paymentAPI.create(payload);
+          saved.push(created);
+        } catch { failed++; }
+      }
+      setPayments(prev => [...prev, ...saved]);
+      setUploadProgress({status: 'success', message: `Payments saved to database! ${failed > 0 ? `(${failed} failed)` : ''}`, count: saved.length});
+    }
+
+    else if (entityType === 'INVOICES') {
+      const saved: Invoice[] = [];
+      let failed = 0;
+      for (const row of data) {
+        try {
+          const payload = {
+            customerId: row.customerId || '',
+            customerName: row.customerName || '',
+            type: (row.type || row.invoiceType || 'ROYALTY').toUpperCase(),
+            amount: Number(row.amount || 0),
+            balance: Number(row.balance !== undefined ? row.balance : row.amount || 0),
+            dueDate: row.dueDate || Date.now(),
+            status: (row.status || 'UNPAID').toUpperCase(),
+            direction: (row.direction || 'IN').toUpperCase(),
+            isVoid: false,
+            createdAt: Date.now()
+          };
+          const created = await invoiceAPI.create(payload);
+          saved.push(created);
+        } catch { failed++; }
+      }
+      setInvoices(prev => [...prev, ...saved]);
+      setUploadProgress({status: 'success', message: `Invoices saved to database! ${failed > 0 ? `(${failed} failed)` : ''}`, count: saved.length});
+    }
+
+    else if (entityType === 'LIABILITIES') {
+      const saved: Liability[] = [];
+      let failed = 0;
+      for (const row of data) {
+        try {
+          const payload = {
+            providerName: row.providerName || row.provider || row.lender || '',
+            principal: Number(row.principal || row.loanAmount || 0),
+            interestRate: Number(row.interestRate || row.rate || 0),
+            startDate: row.startDate ? new Date(row.startDate).getTime() : Date.now(),
+            status: (row.status || 'ACTIVE').toUpperCase(),
+            type: (row.type || 'LOAN').toUpperCase(),
+            notes: row.notes || '',
+            createdAt: Date.now()
+          };
+          const created = await liabilityAPI.create(payload);
+          saved.push(created);
+        } catch { failed++; }
+      }
+      if (setLiabilities) setLiabilities(prev => [...prev, ...saved]);
+      setUploadProgress({status: 'success', message: `Liabilities saved to database! ${failed > 0 ? `(${failed} failed)` : ''}`, count: saved.length});
+    }
+
     else if (entityType === 'CHIT_GROUPS') {
-      const chitGroups = data.map(row => ({
-        id: row.id || Math.random().toString(36).substr(2, 9),
-        groupName: row.groupName || row.chitName || '',
-        totalValue: Number(row.totalValue || row.chitValue || 0),
-        monthlyInstallment: Number(row.monthlyInstallment || row.installment || 0),
-        durationMonths: Number(row.durationMonths || row.duration || 12),
-        startDate: row.startDate || Date.now(),
-        status: (row.status || 'ACTIVE').toUpperCase(),
-        members: row.members || [],
-        createdAt: row.createdAt || Date.now()
-      }));
-      setChitGroups(prev => [...prev, ...chitGroups]);
-      setUploadProgress({status: 'success', message: 'Chit Groups imported successfully!', count: chitGroups.length});
+      const saved: ChitGroup[] = [];
+      let failed = 0;
+      for (const row of data) {
+        try {
+          const payload = {
+            name: row.name || row.groupName || row.chitName || '',
+            totalValue: Number(row.totalValue || row.chitValue || 0),
+            monthlyInstallment: Number(row.monthlyInstallment || row.installment || 0),
+            durationMonths: Number(row.durationMonths || row.duration || 12),
+            commissionPercentage: Number(row.commissionPercentage || 5),
+            startDate: row.startDate ? new Date(row.startDate).getTime() : Date.now(),
+            currentMonth: Number(row.currentMonth || 1),
+            status: (row.status || 'ACTIVE').toUpperCase(),
+            members: [],
+            auctions: [],
+            createdAt: Date.now()
+          };
+          const created = await chitAPI.create(payload);
+          saved.push(created);
+        } catch { failed++; }
+      }
+      setChitGroups(prev => [...prev, ...saved]);
+      setUploadProgress({status: 'success', message: `Chit Groups saved to database! ${failed > 0 ? `(${failed} failed)` : ''}`, count: saved.length});
     }
   };
 
@@ -1034,7 +1096,25 @@ const Settings: React.FC<SettingsProps> = ({
            {/* EXCEL DRAG & DROP UPLOAD */}
            <div className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-sm">
               <h3 className="text-xl font-display font-black text-slate-900 uppercase italic tracking-tighter mb-6">Excel Data Upload</h3>
-              <p className="text-xs text-slate-500 mb-6">Drop an Excel file below. The app will automatically detect the data type and import it.</p>
+              <p className="text-xs text-slate-500 mb-4">Drop an Excel file below. The app will automatically detect the data type and import it.</p>
+              
+              {/* TEMPLATE DOWNLOADS */}
+              <div className="bg-indigo-50 rounded-xl p-4 border border-indigo-200 mb-6">
+                <p className="text-xs font-bold text-indigo-700 mb-3"><i className="fas fa-download mr-1"></i> Step 1 — Download the correct template for your data:</p>
+                <div className="flex flex-wrap gap-2">
+                  {(['CUSTOMERS', 'PAYMENTS', 'LIABILITIES'] as const).map(type => (
+                    <button
+                      key={type}
+                      onClick={() => downloadTemplate(type)}
+                      className="px-4 py-2 bg-indigo-600 text-white text-xs font-bold rounded-lg hover:bg-indigo-700 transition shadow-sm"
+                    >
+                      <i className="fas fa-file-excel mr-1.5"></i>
+                      {type.charAt(0) + type.slice(1).toLowerCase()} Template
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[10px] text-indigo-500 mt-2">Fill in the template, then drop it below (Step 2) to import.</p>
+              </div>
               
               <div 
                  className={`relative border-2 border-dashed rounded-2xl p-12 text-center transition-all ${
