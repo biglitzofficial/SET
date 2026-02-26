@@ -69,6 +69,7 @@ export interface InvestmentTransaction {
   dividend: number;
   totalPayable: number;
   notes?: string;
+  paymentId?: string; // voucher ID — used to reliably reverse the ledger on delete
 }
 
 export interface Investment {
@@ -95,6 +96,7 @@ export interface Investment {
     isPrized?: boolean;
     prizeMonth?: number;
     prizeAmount?: number;
+    paymentId?: string | null; // voucher ID of prize receipt — for reliable reversal
   };
   transactions?: InvestmentTransaction[];
 }

@@ -23,10 +23,10 @@ router.get('/', authenticate, async (req, res) => {
     }
 
     const snapshot = await query.orderBy('startDate', 'desc').get();
-    const investments = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data()
-    }));
+    const investments = snapshot.docs.map(doc => {
+      const { id: _ignored, ...data } = doc.data();
+      return { id: doc.id, ...data };
+    });
 
     res.json(investments);
   } catch (error) {
@@ -44,7 +44,8 @@ router.get('/:id', authenticate, async (req, res) => {
       return res.status(404).json({ error: { message: 'Investment not found' } });
     }
 
-    res.json({ id: doc.id, ...doc.data() });
+    const { id: _ignored, ...docData } = doc.data();
+    res.json({ id: doc.id, ...docData });
   } catch (error) {
     console.error('Get investment error:', error);
     res.status(500).json({ error: { message: 'Failed to fetch investment' } });
@@ -68,17 +69,22 @@ router.post('/', [
       return res.status(400).json({ errors: errors.array() });
     }
 
+    const { id: clientId, ...bodyData } = req.body;
+
     const investmentData = {
-      ...req.body,
-      transactions: req.body.transactions || [],
+      ...bodyData,
+      transactions: bodyData.transactions || [],
       createdAt: Date.now(),
       createdBy: req.user.id
     };
 
-    const docRef = await db.collection(COLLECTIONS.INVESTMENTS).add(investmentData);
+    // Use client-provided ID as Firestore document ID so IDs always match
+    const docId = clientId || db.collection(COLLECTIONS.INVESTMENTS).doc().id;
+    const docRef = db.collection(COLLECTIONS.INVESTMENTS).doc(docId);
+    await docRef.set(investmentData);
     
     res.status(201).json({ 
-      id: docRef.id, 
+      id: docId, 
       ...investmentData 
     });
   } catch (error) {
@@ -100,17 +106,20 @@ router.put('/:id', [
       return res.status(404).json({ error: { message: 'Investment not found' } });
     }
 
+    const { id: _id, ...bodyData } = req.body;
+
     const updateData = {
-      ...req.body,
+      ...bodyData,
       updatedAt: Date.now(),
       updatedBy: req.user.id
     };
 
-    await docRef.update(updateData);
+    await docRef.set(updateData, { merge: true });
 
+    const { id: _docId, ...existingData } = doc.data();
     res.json({ 
       id: req.params.id, 
-      ...doc.data(),
+      ...existingData,
       ...updateData 
     });
   } catch (error) {

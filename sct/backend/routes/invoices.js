@@ -24,8 +24,8 @@ router.get('/', authenticate, async (req, res) => {
 
     const snapshot = await query.orderBy('date', 'desc').get();
     let invoices = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data()
+      ...doc.data(),
+      id: doc.id
     }));
 
     // Filter by date range if provided
@@ -53,7 +53,7 @@ router.get('/:id', authenticate, async (req, res) => {
       return res.status(404).json({ error: { message: 'Invoice not found' } });
     }
 
-    res.json({ id: doc.id, ...doc.data() });
+    res.json({ ...doc.data(), id: doc.id });
   } catch (error) {
     console.error('Get invoice error:', error);
     res.status(500).json({ error: { message: 'Failed to fetch invoice' } });
@@ -90,8 +90,9 @@ router.post('/', [
       nextNumber = lastNumber + 1;
     }
 
+    const { id: _clientId, ...bodyData } = req.body;
     const invoiceData = {
-      ...req.body,
+      ...bodyData,
       invoiceNumber: `INV-${year}-${String(nextNumber).padStart(4, '0')}`,
       balance: req.body.amount, // Initially, balance equals amount
       status: 'UNPAID',
@@ -115,8 +116,8 @@ router.post('/', [
     });
 
     res.status(201).json({ 
-      id: docRef.id, 
-      ...invoiceData 
+      ...invoiceData,
+      id: docRef.id 
     });
   } catch (error) {
     console.error('Create invoice error:', error);

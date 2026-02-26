@@ -24,8 +24,10 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
   const [isGenerating, setIsGenerating] = useState(false);
   const [isConfirming, setIsConfirming] = useState(false);
 
-  // Load invoices from backend
+  // Load invoices from backend ONLY on first mount (when list is empty).
+  // App.tsx handles the initial load; this is just a safety net.
   useEffect(() => {
+    if (invoices.length > 0) return; // already loaded by App.tsx — don't overwrite
     const loadInvoices = async () => {
       try {
         setFetchError(null);
@@ -68,7 +70,9 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
     setIsBulkDeleting(true);
     try {
       await invoiceAPI.bulkDelete([...selectedIds]);
-      setInvoices(prev => prev.filter(inv => !selectedIds.has(inv.id)));
+      // Reload from server to confirm deletion actually persisted
+      const fresh = await invoiceAPI.getAll();
+      setInvoices(fresh);
       setSelectedIds(new Set());
     } catch (error: any) {
       alert(`Failed to delete invoices: ${error?.message || 'Please try again.'}`);
@@ -90,6 +94,8 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
   const [dateFilter, setDateFilter] = useState<'ALL' | 'THIS_MONTH' | 'LAST_MONTH' | 'CUSTOM'>('ALL');
   const [customStartDate, setCustomStartDate] = useState('');
   const [customEndDate, setCustomEndDate] = useState('');
+  const ITEMS_PER_PAGE = 30;
+  const [currentPage, setCurrentPage] = useState(1);
 
   // --- FILTER LOGIC ---
   const filteredInvoices = useMemo(() => {
@@ -116,6 +122,15 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
 
   const totalFilteredAmount = useMemo(() => filteredInvoices.reduce((acc, i) => acc + i.amount, 0), [filteredInvoices]);
   const totalUnpaid = useMemo(() => filteredInvoices.reduce((acc, i) => acc + i.balance, 0), [filteredInvoices]);
+
+  // Reset to page 1 whenever filters/search/tab change
+  useEffect(() => { setCurrentPage(1); }, [filteredInvoices]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredInvoices.length / ITEMS_PER_PAGE));
+  const paginatedInvoices = useMemo(() => {
+    const start = (currentPage - 1) * ITEMS_PER_PAGE;
+    return filteredInvoices.slice(start, start + ITEMS_PER_PAGE);
+  }, [filteredInvoices, currentPage, ITEMS_PER_PAGE]);
 
   // --- LIVE CHIT CALCULATION ---
   const chitCalc = useMemo(() => {
@@ -339,10 +354,9 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
       });
 
       if (alreadyHasAuctionThisMonth) {
-         if (!window.confirm(`WARNING: An auction has already been conducted in ${billingDateObj.toLocaleString('default', { month: 'long', year: 'numeric' })}. Are you sure you want to conduct another bid in the same month?`)) {
-            setIsGenerating(false);
-            return;
-         }
+         alert(`❌ An auction for this chit group was already conducted in ${billingDateObj.toLocaleString('default', { month: 'long', year: 'numeric' })}. Each chit group can only have one auction per calendar month.`);
+         setIsGenerating(false);
+         return;
       }
 
       // A. Create INVOICES (Receivables) for all members - ONE INVOICE PER SEAT
@@ -528,7 +542,9 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
      setDeletingInvoiceId(id);
      try {
        await invoiceAPI.delete(id);
-       setInvoices(prev => prev.filter(i => i.id !== id));
+       // Reload from server to confirm deletion actually persisted
+       const fresh = await invoiceAPI.getAll();
+       setInvoices(fresh);
      } catch (error) {
        console.error('Failed to delete invoice:', error);
        alert('Failed to delete invoice. Please try again.');
@@ -720,8 +736,8 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
                     <input
                       type="checkbox"
                       className="rounded cursor-pointer accent-indigo-500"
-                      checked={filteredInvoices.length > 0 && selectedIds.size === filteredInvoices.length}
-                      onChange={() => toggleSelectAll(filteredInvoices.map(i => i.id))}
+                      checked={paginatedInvoices.length > 0 && paginatedInvoices.every(i => selectedIds.has(i.id))}
+                      onChange={() => toggleSelectAll(paginatedInvoices.map(i => i.id))}
                     />
                   </th>
                   <th className="px-8 py-6 text-left text-[10px] font-black uppercase tracking-widest opacity-80">Date</th>
@@ -733,7 +749,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
                </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-               {filteredInvoices.map((inv, idx) => (
+               {paginatedInvoices.map((inv, idx) => (
                   <tr key={inv.id} className={`hover:bg-slate-50 transition-colors group ${selectedIds.has(inv.id) ? 'bg-indigo-50' : ''}`}>
                      <td className="px-4 py-6 text-center">
                        <input
@@ -788,6 +804,42 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
             </tbody>
          </table>
          </div>
+         {/* PAGINATION */}
+         {totalPages > 1 && (
+           <div className="flex items-center justify-between px-8 py-4 border-t border-slate-100 bg-slate-50 rounded-b-3xl">
+             <span className="text-xs font-bold text-slate-500">
+               Showing {((currentPage - 1) * ITEMS_PER_PAGE) + 1}–{Math.min(currentPage * ITEMS_PER_PAGE, filteredInvoices.length)} of {filteredInvoices.length} records
+             </span>
+             <div className="flex items-center gap-1">
+               <button onClick={() => setCurrentPage(1)} disabled={currentPage === 1}
+                 className="h-8 w-8 rounded-lg flex items-center justify-center text-slate-500 hover:bg-slate-200 disabled:opacity-30 disabled:cursor-not-allowed text-xs">
+                 <i className="fas fa-angle-double-left"></i>
+               </button>
+               <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1}
+                 className="h-8 w-8 rounded-lg flex items-center justify-center text-slate-500 hover:bg-slate-200 disabled:opacity-30 disabled:cursor-not-allowed text-xs">
+                 <i className="fas fa-chevron-left"></i>
+               </button>
+               {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                 const offset = Math.max(0, Math.min(currentPage - 3, totalPages - 5));
+                 const page = offset + i + 1;
+                 return (
+                   <button key={page} onClick={() => setCurrentPage(page)}
+                     className={`h-8 w-8 rounded-lg text-xs font-black ${
+                       currentPage === page ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-200'
+                     }`}>{page}</button>
+                 );
+               })}
+               <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages}
+                 className="h-8 w-8 rounded-lg flex items-center justify-center text-slate-500 hover:bg-slate-200 disabled:opacity-30 disabled:cursor-not-allowed text-xs">
+                 <i className="fas fa-chevron-right"></i>
+               </button>
+               <button onClick={() => setCurrentPage(totalPages)} disabled={currentPage === totalPages}
+                 className="h-8 w-8 rounded-lg flex items-center justify-center text-slate-500 hover:bg-slate-200 disabled:opacity-30 disabled:cursor-not-allowed text-xs">
+                 <i className="fas fa-angle-double-right"></i>
+               </button>
+             </div>
+           </div>
+         )}
       </div>
 
       {/* BULK GENERATION MODAL */}

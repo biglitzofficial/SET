@@ -144,34 +144,23 @@ const ReportList: React.FC<ReportListProps> = ({ stats, invoices, payments, cust
 
   return (
     <div className="space-y-8 animate-fadeIn">
-      {/* Report Toggle & Time Frame */}
-      <div className="flex flex-col items-center gap-4">
+      {/* Controls Row */}
+      <div className="flex flex-wrap items-center gap-4">
         <div className="bg-white p-1.5 rounded-2xl border border-slate-200 inline-flex shadow-sm">
-          <button 
-            onClick={() => setReportType('PL')} 
-            className={`px-8 py-3 text-xs font-black uppercase tracking-widest rounded-xl transition-all ${reportType === 'PL' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}
-          >
-            Profit & Loss
-          </button>
-          <button 
-            onClick={() => setReportType('BS')} 
-            className={`px-8 py-3 text-xs font-black uppercase tracking-widest rounded-xl transition-all ${reportType === 'BS' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}
-          >
-            Balance Sheet
-          </button>
+          <button onClick={() => setReportType('PL')} className={`px-8 py-3 text-xs font-black uppercase tracking-widest rounded-xl transition-all ${reportType === 'PL' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}>Profit &amp; Loss</button>
+          <button onClick={() => setReportType('BS')} className={`px-8 py-3 text-xs font-black uppercase tracking-widest rounded-xl transition-all ${reportType === 'BS' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}>Balance Sheet</button>
         </div>
-
         {reportType === 'PL' && (
-            <div className="bg-slate-100 p-1 rounded-xl flex gap-2">
-                <button onClick={() => setTimeFrame('THIS_MONTH')} className={`px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${timeFrame === 'THIS_MONTH' ? 'bg-white shadow text-indigo-600' : 'text-slate-400'}`}>This Month</button>
-                <button onClick={() => setTimeFrame('LAST_MONTH')} className={`px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${timeFrame === 'LAST_MONTH' ? 'bg-white shadow text-indigo-600' : 'text-slate-400'}`}>Last Month</button>
-                <button onClick={() => setTimeFrame('ALL')} className={`px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${timeFrame === 'ALL' ? 'bg-white shadow text-indigo-600' : 'text-slate-400'}`}>All Time</button>
-            </div>
+          <div className="bg-slate-100 p-1 rounded-xl flex gap-1">
+            <button onClick={() => setTimeFrame('THIS_MONTH')} className={`px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${timeFrame === 'THIS_MONTH' ? 'bg-white shadow text-indigo-600' : 'text-slate-400'}`}>This Month</button>
+            <button onClick={() => setTimeFrame('LAST_MONTH')} className={`px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${timeFrame === 'LAST_MONTH' ? 'bg-white shadow text-indigo-600' : 'text-slate-400'}`}>Last Month</button>
+            <button onClick={() => setTimeFrame('ALL')} className={`px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${timeFrame === 'ALL' ? 'bg-white shadow text-indigo-600' : 'text-slate-400'}`}>All Time</button>
+          </div>
         )}
       </div>
 
       <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-xl overflow-hidden min-h-[600px] flex flex-col">
-        {/* REPORT HEADER */}
+          {/* REPORT HEADER */}
         <div className="bg-slate-50 border-b border-slate-100 p-10 text-center">
            <h2 className="text-3xl font-display font-black text-slate-900 uppercase italic tracking-tighter">
              {reportType === 'PL' ? 'Statement of Income' : 'Statement of Financial Position'}

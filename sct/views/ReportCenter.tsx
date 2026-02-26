@@ -6,6 +6,8 @@ import ReportList from './ReportList';
 import GeneralLedger from './GeneralLedger';
 import OutstandingReports from './OutstandingReports';
 import BusinessPerformance from './BusinessPerformance';
+import ExpenseLedger from './ExpenseLedger';
+import IncomeLedger from './IncomeLedger';
 
 interface ReportCenterProps {
   payments: Payment[];
@@ -104,7 +106,7 @@ const AccountLedgerHub = ({ customers, liabilities, invoices, payments }: any) =
          // Strict Category Matching
          if (viewScope === 'ROYALTY') return p.category === 'ROYALTY';
          if (viewScope === 'INTEREST') return p.category === 'INTEREST' || p.category === 'PRINCIPAL_RECOVERY';
-         if (viewScope === 'CHIT') return p.category === 'CHIT';
+         if (viewScope === 'CHIT') return p.category === 'CHIT' || p.category === 'CHIT_FUND';
          if (viewScope === 'GENERAL') return p.category === 'GENERAL' || p.category === 'CUSTOMER_PAYMENT';
          return false;
       });
@@ -249,14 +251,42 @@ const AccountLedgerHub = ({ customers, liabilities, invoices, payments }: any) =
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-slate-50">
-               {/* OPENING BALANCE ROW */}
-               <tr className="bg-slate-50/50 print:bg-white">
-                 <td className="px-8 py-4 text-xs font-black uppercase tracking-widest text-slate-400 print:px-2" colSpan={4}>Opening Balance</td>
-                 <td className="px-8 py-4 text-right text-sm font-display font-bold text-slate-800 print:px-2">
-                    ₹{Math.abs(ledgerData.opening).toLocaleString()}
-                    <span className="text-[9px] text-slate-400 ml-1">{ledgerData.opening >= 0 ? 'Dr' : 'Cr'}</span>
-                 </td>
-               </tr>
+               {/* OPENING BALANCE ROW — shown as a proper Dr/Cr entry with date & reference */}
+               {ledgerData.opening !== 0 && (() => {
+                 const raw = ledgerData.party.raw;
+                 const isLenderParty = ledgerData.party.type === 'LENDER';
+                 const openingDate = isLenderParty ? (raw?.startDate || raw?.createdAt || 0) : (raw?.createdAt || 0);
+                 const openingRef = isLenderParty ? 'LOAN RECEIVED'
+                   : viewScope === 'INTEREST' ? 'CAPITAL LENT'
+                   : 'OPENING BALANCE';
+                 const openingDesc = isLenderParty ? 'Initial Loan Principal'
+                   : viewScope === 'INTEREST' ? 'Principal Lent to Party'
+                   : viewScope === 'COMBINED' ? 'Principal Lent + Opening Trade Balance'
+                   : 'Opening Trade Balance';
+                 return (
+                   <tr className="bg-indigo-50/60 print:bg-white border-b border-indigo-100">
+                     <td className="px-8 py-4 text-xs font-bold text-indigo-500 print:px-2">
+                       {openingDate ? new Date(openingDate).toLocaleDateString() : '—'}
+                     </td>
+                     <td className="px-8 py-4 print:px-2">
+                       <div className="text-sm font-black text-indigo-700">{openingRef}</div>
+                       <div className="text-[9px] font-black text-indigo-400 uppercase tracking-widest">{openingDesc}</div>
+                     </td>
+                     {/* Dr column: positive opening = Dr (they owe us / we lent out) */}
+                     <td className="px-8 py-4 text-sm font-mono font-bold text-emerald-600 text-right print:px-2">
+                       {ledgerData.opening > 0 ? `₹${ledgerData.opening.toLocaleString()}` : '-'}
+                     </td>
+                     {/* Cr column: negative opening = Cr (we owe them / loan taken) */}
+                     <td className="px-8 py-4 text-sm font-mono font-bold text-rose-600 text-right print:px-2">
+                       {ledgerData.opening < 0 ? `₹${Math.abs(ledgerData.opening).toLocaleString()}` : '-'}
+                     </td>
+                     <td className="px-8 py-4 text-right text-sm font-mono font-bold text-slate-800 print:px-2">
+                       ₹{Math.abs(ledgerData.opening).toLocaleString()}
+                       <span className="text-[9px] text-slate-400 ml-1">{ledgerData.opening >= 0 ? 'Dr' : 'Cr'}</span>
+                     </td>
+                   </tr>
+                 );
+               })()}
                
                {/* TRANSACTIONS */}
                {ledgerData.rows.map((row: any, i: number) => (
@@ -283,13 +313,25 @@ const AccountLedgerHub = ({ customers, liabilities, invoices, payments }: any) =
             </tbody>
             {/* FOOTER TOTAL */}
             <tfoot className="bg-slate-900 text-white print:bg-white print:text-black print:border-t-2 print:border-black">
-                <tr>
-                    <td colSpan={3} className="px-8 py-6 text-right text-xs font-black uppercase tracking-widest">Closing Balance</td>
-                    <td colSpan={2} className="px-8 py-6 text-right text-xl font-display font-black tracking-tighter">
-                        ₹{Math.abs(ledgerData.closing).toLocaleString()} 
-                        <span className="text-xs ml-2 opacity-70">{ledgerData.closing >= 0 ? '(Receivable / Dr)' : '(Payable / Cr)'}</span>
-                    </td>
-                </tr>
+               {/* DR / CR column totals and closing balance aligned */}
+               <tr className="border-b border-slate-700">
+                  <td colSpan={2} className="px-8 py-4 text-right text-[10px] font-black uppercase tracking-widest text-slate-400">Column Totals</td>
+                  <td className="px-8 py-4 text-right text-sm font-mono font-black text-emerald-400">
+                     ₹{(ledgerData.rows.reduce((s: number, r: any) => s + (r.dr || 0), 0) + (ledgerData.opening > 0 ? ledgerData.opening : 0)).toLocaleString()}
+                     <div className="text-[8px] font-black uppercase tracking-widest text-slate-500 mt-0.5">Total Debit</div>
+                  </td>
+                  <td className="px-8 py-4 text-right text-sm font-mono font-black text-rose-400">
+                     ₹{(ledgerData.rows.reduce((s: number, r: any) => s + (r.cr || 0), 0) + (ledgerData.opening < 0 ? Math.abs(ledgerData.opening) : 0)).toLocaleString()}
+                     <div className="text-[8px] font-black uppercase tracking-widest text-slate-500 mt-0.5">Total Credit</div>
+                  </td>
+                  <td className="px-8 py-4 text-right text-xl font-display font-black tracking-tighter">
+                     <div className="text-xs font-black uppercase tracking-widest mb-1">Closing Balance</div>
+                     ₹{Math.abs(ledgerData.closing).toLocaleString()}
+                     <span className={`text-xs ml-2 font-black ${ledgerData.closing >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                       {ledgerData.closing >= 0 ? '＋ They Owe You' : '－ You Owe Them'}
+                     </span>
+                  </td>
+               </tr>
             </tfoot>
           </table>
         </div>
@@ -337,8 +379,9 @@ const ReportCenter: React.FC<ReportCenterProps> = (props) => {
             {[
                { path: '/ledger', label: 'Bank Books' },
                { path: '/accounts', label: 'Party Ledgers' },
-               { path: '/business-units', label: 'Business Units' },
                { path: '/outstanding', label: 'Outstanding' },
+               { path: '/income-ledger', label: 'Income Ledger' },
+               { path: '/expense-ledger', label: 'Expense Ledger' },
                { path: '/statements', label: 'Statements' }
             ].map(tab => (
                <Link 
@@ -355,9 +398,10 @@ const ReportCenter: React.FC<ReportCenterProps> = (props) => {
       <Routes>
         <Route path="ledger" element={<GeneralLedger payments={props.payments} openingBalances={props.openingBalances} bankAccounts={props.bankAccounts} />} />
         <Route path="accounts" element={<AccountLedgerHub {...props} />} />
-        <Route path="business-units" element={<BusinessPerformance payments={props.payments} otherBusinesses={props.otherBusinesses} />} />
         <Route path="outstanding" element={<OutstandingReports customers={props.customers} invoices={props.invoices} liabilities={props.liabilities} payments={props.payments} onDrillDown={handleDrillDown} />} />
         <Route path="statements" element={<ReportList {...props} />} />
+        <Route path="expense-ledger" element={<ExpenseLedger payments={props.payments} />} />
+        <Route path="income-ledger" element={<IncomeLedger payments={props.payments} />} />
       </Routes>
     </div>
   );

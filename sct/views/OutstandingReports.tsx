@@ -24,7 +24,7 @@ const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invo
   const [searchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState<'RECEIVABLES' | 'PAYABLES' | 'ADVANCES' | 'MARKET_CAPITAL'>('RECEIVABLES');
   const [sortOrder, setSortOrder] = useState<'ASC' | 'DESC'>('DESC');
-  const [receivableFilter, setReceivableFilter] = useState<'ALL' | 'ROYALTY' | 'INTEREST' | 'CHIT' | 'GENERAL'>('ALL');
+  const [categoryFilter, setCategoryFilter] = useState<'ALL' | 'ROYALTY' | 'INTEREST' | 'CHIT' | 'GENERAL'>('ALL');
   
   // Due dates storage - persisted in Firebase
   const [dueDates, setDueDates] = useState<DueDateRecord[]>([]);
@@ -105,11 +105,12 @@ const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invo
     // Set the active tab if provided in URL
     if (tab === 'receivables' || tab === 'payables' || tab === 'advances' || tab === 'market_capital') {
       setActiveTab(tab.toUpperCase().replace('_', '_') as 'RECEIVABLES' | 'PAYABLES' | 'ADVANCES' | 'MARKET_CAPITAL');
+      setCategoryFilter('ALL');
     }
     
     // Set the filter if provided in URL (only affects receivables filtering)
     if (filter && (filter === 'royalty' || filter === 'interest' || filter === 'chit' || filter === 'general')) {
-      setReceivableFilter(filter.toUpperCase() as 'ROYALTY' | 'INTEREST' | 'CHIT' | 'GENERAL');
+      setCategoryFilter(filter.toUpperCase() as 'ROYALTY' | 'INTEREST' | 'CHIT' | 'GENERAL');
     }
   }, [searchParams]);
 
@@ -120,8 +121,9 @@ const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invo
       const custPayments = payments.filter(p => p.sourceId === cust.id);
 
       // --- LEDGER BALANCE CALCULATION ---
-      // Receivables (Debits)
-      const opening = (cust.openingBalance || 0); // Can be + (dr) or - (cr)
+      // MUST exactly match Party Ledger COMBINED opening formula in ReportCenter.tsx:
+      // opening = interestPrincipal + openingBalance - creditPrincipal
+      const opening = (cust.interestPrincipal || 0) + (cust.openingBalance || 0) - (cust.creditPrincipal || 0);
       const totalInvoicesAmount = custInvoices.filter(i => i.direction === 'IN').reduce((sum, i) => sum + i.amount, 0);
       const paymentsOut = custPayments.filter(p => p.type === 'OUT').reduce((sum, p) => sum + p.amount, 0); // We paid them (Debit)
 
@@ -134,24 +136,31 @@ const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invo
       // Negative = Payable (Credit Balance)
       const netLedgerBalance = (opening + totalInvoicesAmount + paymentsOut) - (totalPayableInvoices + paymentsIn);
 
-      // --- BREAKDOWN APPROXIMATION (Waterfall or Specific) ---
-      // Since payments might be generic, we calculate "Due" based on invoice balance for specific categories,
-      // but then adjust GENERAL to absorb the unallocated payments to match the Ledger Balance.
-      
-      const specificDue = {
-        ROYALTY: custInvoices.filter(i => i.type === 'ROYALTY').reduce((s, i) => s + i.balance, 0),
-        INTEREST: custInvoices.filter(i => i.type === 'INTEREST').reduce((s, i) => s + i.balance, 0),
-        CHIT: custInvoices.filter(i => i.type === 'CHIT' && i.direction === 'IN').reduce((s, i) => s + i.balance, 0)
-      };
+      // --- CATEGORY BREAKDOWN using invoice amounts + category-specific payments ---
+      // Same logic as netLedgerBalance but scoped per category, so filter results match the ledger
+      const chitInAmt    = custInvoices.filter(i => i.type === 'CHIT' && i.direction === 'IN').reduce((s, i) => s + i.amount, 0);
+      const chitOutAmt   = custInvoices.filter(i => i.type === 'CHIT' && i.direction === 'OUT').reduce((s, i) => s + i.amount, 0);
+      const chitPaidIn   = custPayments.filter(p => p.type === 'IN' && p.category === 'CHIT').reduce((s, p) => s + p.amount, 0);
+      const chitPaidOut  = custPayments.filter(p => p.type === 'OUT' && p.category === 'CHIT').reduce((s, p) => s + p.amount, 0);
+      const chitNet      = (chitInAmt + chitPaidOut) - (chitOutAmt + chitPaidIn); // positive = receivable, negative = payable
 
-      // To ensure Total matches Net Ledger Balance, GENERAL is the plug.
-      // General = NetLedgerBalance - (Royalty + Interest + Chit)
-      // This implicitly allocates any excess payment to General/Advance.
-      const generalDue = netLedgerBalance - (specificDue.ROYALTY + specificDue.INTEREST + specificDue.CHIT);
+      const royaltyAmt   = custInvoices.filter(i => i.type === 'ROYALTY').reduce((s, i) => s + i.amount, 0);
+      const royaltyPaid  = custPayments.filter(p => p.type === 'IN' && p.category === 'ROYALTY').reduce((s, p) => s + p.amount, 0);
+      const royaltyNet   = royaltyAmt - royaltyPaid;
+
+      const interestAmt  = custInvoices.filter(i => i.type === 'INTEREST').reduce((s, i) => s + i.amount, 0);
+      const interestPaid = custPayments.filter(p => p.type === 'IN' && (p.category === 'INTEREST' || p.category === 'PRINCIPAL_RECOVERY')).reduce((s, p) => s + p.amount, 0);
+      const interestNet  = interestAmt - interestPaid;
+
+      // GENERAL absorbs the remainder so category totals always reconcile to netLedgerBalance
+      const generalDue   = netLedgerBalance - chitNet - royaltyNet - interestNet;
 
       const breakdown = {
-        ...specificDue,
-        GENERAL: generalDue
+        CHIT:            chitNet,
+        CHIT_RECEIVABLE: Math.max(0, chitInAmt - chitPaidIn), // installments owed to us only (no payout netting)
+        ROYALTY:         royaltyNet,
+        INTEREST:        interestNet,
+        GENERAL:         generalDue
       };
 
       return { 
@@ -166,41 +175,47 @@ const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invo
     let result: any[] = [];
     
     if (activeTab === 'RECEIVABLES') {
-       // Filter based on Category if selected
        result = customerAnalysis
          .map(c => {
             let displayAmount = 0;
             let categoryKey = '';
-            if (receivableFilter === 'ALL') {
+            if (categoryFilter === 'ALL') {
               displayAmount = c.netLedgerBalance;
               categoryKey = 'ALL';
+            } else if (categoryFilter === 'CHIT') {
+              displayAmount = c.breakdown.CHIT; // mirrors Party Ledger CHIT scope exactly
+              categoryKey = 'CHIT';
             } else {
-              displayAmount = c.breakdown[receivableFilter];
-              categoryKey = receivableFilter;
+              displayAmount = c.breakdown[categoryFilter];
+              categoryKey = categoryFilter;
             }
-            
             const dueDate = getDueDate(c.id, categoryKey);
             const dueStatus = categorizeDueDate(dueDate);
             const needsReminder = isDueWithin3Days(dueDate);
-            
             return { ...c, displayAmount, categoryKey, dueDate, dueStatus, needsReminder };
          })
-         .filter(c => c.displayAmount > 0); // Only positive receivables
+         .filter(c => c.displayAmount > 0);
     }
     else if (activeTab === 'ADVANCES') {
-       // Advances are negative outstanding (Payables to customers or Overpayment)
        result = customerAnalysis
          .map(c => {
+           const catAmt = categoryFilter === 'ALL' ? c.netLedgerBalance
+             : categoryFilter === 'CHIT' ? c.breakdown.CHIT
+             : categoryFilter === 'INTEREST' ? c.breakdown.INTEREST
+             : categoryFilter === 'ROYALTY' ? c.breakdown.ROYALTY
+             : c.breakdown.GENERAL;
            const dueDate = getDueDate(c.id, 'ADVANCE');
            const dueStatus = categorizeDueDate(dueDate);
            const needsReminder = isDueWithin3Days(dueDate);
-           return { ...c, displayAmount: c.netLedgerBalance, categoryKey: 'ADVANCE', dueDate, dueStatus, needsReminder };
+           return { ...c, displayAmount: catAmt, categoryKey: categoryFilter === 'ALL' ? 'ADVANCE' : categoryFilter, dueDate, dueStatus, needsReminder };
          })
-         .filter(c => c.displayAmount < 0);
+         .filter(c => c.displayAmount < 0 && !c.isLender);
     }
     else if (activeTab === 'MARKET_CAPITAL') {
+       // Market Capital = interest principal loans; filter by INTEREST or ALL
        result = customers
          .filter(c => c.isInterest && c.interestPrincipal > 0)
+         .filter(() => categoryFilter === 'ALL' || categoryFilter === 'INTEREST')
          .map(c => {
            const dueDate = getDueDate(c.id, 'CAPITAL');
            const dueStatus = categorizeDueDate(dueDate);
@@ -209,26 +224,56 @@ const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invo
          });
     }
     else {
-       // PAYABLES: Lenders + Customers who are strictly Creditors
-       const lenders = liabilities
-         .filter(l => l.principal > 0)
-         .map(l => {
-           const dueDate = getDueDate(l.id, 'PAYABLE');
-           const dueStatus = categorizeDueDate(dueDate);
-           const needsReminder = isDueWithin3Days(dueDate);
-           return { ...l, displayAmount: l.principal, categoryKey: 'PAYABLE', dueDate, dueStatus, needsReminder };
-         });
-       
-       const customerCreditors = customers
-         .filter(c => c.isLender && c.creditPrincipal > 0)
-         .map(c => {
-           const dueDate = getDueDate(c.id, 'PAYABLE');
-           const dueStatus = categorizeDueDate(dueDate);
-           const needsReminder = isDueWithin3Days(dueDate);
-           return { ...c, displayAmount: c.creditPrincipal, name: `${c.name} (Lender)`, categoryKey: 'PAYABLE', dueDate, dueStatus, needsReminder };
-         });
+       // PAYABLES
+       // Liabilities (money borrowed - INTEREST / GENERAL category)
+       const lenders = (categoryFilter === 'ALL' || categoryFilter === 'INTEREST' || categoryFilter === 'GENERAL')
+         ? liabilities.map(l => {
+             // Subtract any OUT payments matched by name (covers LOAN_REPAYMENT by sourceId or GENERAL payments by sourceName)
+             const paidOut = payments
+               .filter(p => p.type === 'OUT' && (
+                 p.sourceId === l.id ||
+                 (p.sourceName || '').toLowerCase() === (l.providerName || '').toLowerCase()
+               ))
+               .reduce((sum, p) => sum + p.amount, 0);
+             const remaining = Math.max(0, l.principal - paidOut);
+             const dueDate = getDueDate(l.id, 'PAYABLE');
+             const dueStatus = categorizeDueDate(dueDate);
+             const needsReminder = isDueWithin3Days(dueDate);
+             return { ...l, displayAmount: remaining, categoryKey: 'PAYABLE', dueDate, dueStatus, needsReminder };
+           }).filter(l => l.displayAmount > 0)
+         : [];
 
-       result = [...lenders, ...customerCreditors];
+       // isLender customers (credit principal minus OUT payments - GENERAL)
+       const customerCreditors = (categoryFilter === 'ALL' || categoryFilter === 'GENERAL')
+         ? customers.filter(c => c.isLender).map(c => {
+             // Sum all OUT payments made to this lender customer (repayments)
+             const paidOut = payments
+               .filter(p => p.sourceId === c.id && p.type === 'OUT')
+               .reduce((sum, p) => sum + p.amount, 0);
+             const outstanding = Math.max(0, (c.creditPrincipal || 0) - paidOut);
+             const dueDate = getDueDate(c.id, 'PAYABLE');
+             const dueStatus = categorizeDueDate(dueDate);
+             const needsReminder = isDueWithin3Days(dueDate);
+             return { ...c, displayAmount: outstanding, name: `${c.name} (Lender)`, categoryKey: 'PAYABLE', dueDate, dueStatus, needsReminder };
+           }).filter(c => c.displayAmount > 0)
+         : [];
+
+       // Debtor customers: chit winners we owe payout (CHIT category)
+       const debtorCustomers = (categoryFilter === 'ALL' || categoryFilter === 'CHIT')
+         ? customerAnalysis.filter(c => c.breakdown.CHIT < 0 && !c.isLender).map(c => {
+             // Any OUT payment to this customer (regardless of category) reduces what we owe them
+             const totalPaidOut = payments
+               .filter(p => p.sourceId === c.id && p.type === 'OUT')
+               .reduce((sum, p) => sum + p.amount, 0);
+             const remaining = Math.max(0, Math.abs(c.breakdown.CHIT) - totalPaidOut);
+             const dueDate = getDueDate(c.id, 'PAYABLE');
+             const dueStatus = categorizeDueDate(dueDate);
+             const needsReminder = isDueWithin3Days(dueDate);
+             return { ...c, displayAmount: remaining, categoryKey: 'CHIT', dueDate, dueStatus, needsReminder };
+           }).filter(c => c.displayAmount > 0)
+         : [];
+
+       result = [...lenders, ...customerCreditors, ...debtorCustomers];
     }
 
     // Dynamic Sort
@@ -237,7 +282,7 @@ const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invo
        const valB = Math.abs(b.displayAmount);
        return sortOrder === 'DESC' ? valB - valA : valA - valB;
     });
-  }, [activeTab, customerAnalysis, customers, liabilities, sortOrder, receivableFilter, dueDates]);
+  }, [activeTab, customerAnalysis, customers, liabilities, payments, sortOrder, categoryFilter, dueDates]);
 
   // Categorize data into 3 columns based on due status
   const categorizedData = useMemo(() => {
@@ -261,9 +306,9 @@ const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invo
           )}
           <div>
             <div className="font-black text-sm text-slate-900 uppercase">{item.name || item.providerName}</div>
-            {activeTab === 'RECEIVABLES' && receivableFilter !== 'ALL' && (
+            {categoryFilter !== 'ALL' && (
               <span className="inline-block px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest bg-indigo-50 text-indigo-600 mt-1">
-                {receivableFilter}
+                {categoryFilter}
               </span>
             )}
           </div>
@@ -320,7 +365,7 @@ const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invo
           {['RECEIVABLES', 'MARKET_CAPITAL', 'ADVANCES', 'PAYABLES'].map(tab => (
             <button 
               key={tab} 
-              onClick={() => { setActiveTab(tab as any); setReceivableFilter('ALL'); }} 
+              onClick={() => { setActiveTab(tab as any); setCategoryFilter('ALL'); }} 
               className={`px-6 py-3 text-xs font-black uppercase tracking-widest rounded-xl transition-all whitespace-nowrap ${
                 activeTab === tab 
                   ? 'bg-slate-900 text-white shadow-md' 
@@ -333,19 +378,17 @@ const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invo
         </div>
         
         <div className="flex gap-3 w-full md:w-auto">
-           {activeTab === 'RECEIVABLES' && (
-             <select 
-               className="px-4 py-3 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-700 uppercase tracking-widest outline-none focus:border-indigo-500"
-               value={receivableFilter}
-               onChange={(e) => setReceivableFilter(e.target.value as any)}
-             >
-                <option value="ALL">All Categories</option>
-                <option value="ROYALTY">Royalty Only</option>
-                <option value="INTEREST">Interest Only</option>
-                <option value="CHIT">Chit Fund Only</option>
-                <option value="GENERAL">General Trade</option>
-             </select>
-           )}
+           <select 
+             className="px-4 py-3 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-700 uppercase tracking-widest outline-none focus:border-indigo-500"
+             value={categoryFilter}
+             onChange={(e) => setCategoryFilter(e.target.value as any)}
+           >
+             <option value="ALL">All Categories</option>
+             {(activeTab === 'RECEIVABLES' || activeTab === 'PAYABLES' || activeTab === 'ADVANCES') && <option value="ROYALTY">Royalty Only</option>}
+             <option value="INTEREST">{activeTab === 'MARKET_CAPITAL' ? 'Market Capital' : 'Interest Only'}</option>
+             <option value="CHIT">Chit Fund Only</option>
+             {(activeTab === 'RECEIVABLES' || activeTab === 'PAYABLES' || activeTab === 'ADVANCES') && <option value="GENERAL">General Trade</option>}
+           </select>
 
            <button 
               onClick={() => setSortOrder(prev => prev === 'ASC' ? 'DESC' : 'ASC')}

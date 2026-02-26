@@ -1,0 +1,16 @@
+{
+  "name": "Sri Chendur Traders | Finance OS",
+  "short_name": "SCT Finance",
+  "icons": [
+    {
+      "src": "/favicon.jpeg",
+      "sizes": "1024x1024",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ],
+  "theme_color": "#1e1b4b",
+  "background_color": "#1e1b4b",
+  "display": "standalone",
+  "start_url": "/"
+}

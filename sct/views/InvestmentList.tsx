@@ -1,7 +1,7 @@
 
 import React, { useState, useMemo } from 'react';
 import { Investment, InvestmentTransaction, Payment, PaymentMode } from '../types';
-import { investmentAPI } from '../services/api';
+import { investmentAPI, paymentAPI } from '../services/api';
 
 interface InvestmentListProps {
   investments: Investment[];
@@ -22,9 +22,13 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
   // Filter State
   const [filterType, setFilterType] = useState<string>('ALL');
 
+  // View Mode
+  const [viewMode, setViewMode] = useState<'card' | 'list'>('list');
+
   // Ledger Entry State (Chit & Regular)
   const [showLedgerEntry, setShowLedgerEntry] = useState<{ month: number, invId: string } | null>(null);
   const [showPremiumEntry, setShowPremiumEntry] = useState<boolean>(false); // For LIC/SIP/Gold
+  const [deletingLedgerMonth, setDeletingLedgerMonth] = useState<number | null>(null);
 
   const [ledgerForm, setLedgerForm] = useState<{ amountPaid: number; dividend: number; date: number; paymentMode: PaymentMode }>({ 
     amountPaid: 0, 
@@ -92,7 +96,8 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
 
     try {
       if (editingId) {
-        await investmentAPI.update(editingId, finalData);
+        const { id: _id, ...updatePayload } = finalData as Investment;
+        await investmentAPI.update(editingId, updatePayload);
         setInvestments(prev => prev.map(inv => inv.id === editingId ? { ...inv, ...finalData as Investment } : inv));
       } else {
         const newInvestment = { ...finalData as Investment, id: Math.random().toString(36).substr(2, 9), transactions: [] };
@@ -118,9 +123,10 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
   };
 
   // --- LEDGER SAVING LOGIC (Common for Chit & Regular) ---
-  const handleLedgerSave = () => {
-     if (!viewDetail) return;
-     
+  const handleLedgerSave = async () => {
+     if (!viewDetail || isSubmitting) return;
+     setIsSubmitting(true);
+
      // Determine month number
      let monthNum = 0;
      if (showLedgerEntry) {
@@ -128,6 +134,7 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
      } else if (showPremiumEntry) {
         monthNum = (viewDetail.transactions?.length || 0) + 1;
      } else {
+        setIsSubmitting(false);
         return;
      }
 
@@ -140,35 +147,50 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
         totalPayable: ledgerForm.amountPaid + ledgerForm.dividend
      };
 
-     const updatedInv = {
-        ...viewDetail,
-        transactions: [...(viewDetail.transactions || []), newTransaction].sort((a,b) => a.month - b.month)
-     };
+     try {
+        // Persist transaction to backend
+        await investmentAPI.recordTransaction(viewDetail.id, newTransaction);
 
-     setInvestments(prev => prev.map(inv => inv.id === viewDetail.id ? updatedInv : inv));
-     
-     // CRITICAL: Auto-create Payment Voucher if setPayments is available
-     if (setPayments) {
-        const newPayment: Payment = {
-           id: Math.random().toString(36).substr(2, 9),
-           type: 'OUT',
-           voucherType: 'PAYMENT',
-           amount: ledgerForm.amountPaid,
-           mode: ledgerForm.paymentMode,
-           date: ledgerForm.date,
-           sourceId: viewDetail.id,
-           sourceName: viewDetail.name,
-           category: `INVESTMENT_${viewDetail.type}`,
-           notes: `${viewDetail.type} Payment - Month ${monthNum}`
+        const updatedInv = {
+           ...viewDetail,
+           transactions: [...(viewDetail.transactions || []), newTransaction].sort((a,b) => a.month - b.month)
         };
-        setPayments(prev => [newPayment, ...prev]);
-        alert("Ledger updated & Bank Balance Reduced.");
-     }
+        setInvestments(prev => prev.map(inv => inv.id === viewDetail.id ? updatedInv : inv));
+        setViewDetail(updatedInv);
 
-     setViewDetail(updatedInv);
-     setShowLedgerEntry(null);
-     setShowPremiumEntry(false);
-     setLedgerForm({ amountPaid: 0, dividend: 0, date: Date.now(), paymentMode: 'CASH' });
+        // Auto-create Payment Voucher if setPayments is available
+        if (setPayments) {
+           const newPayment: Payment = {
+              id: Math.random().toString(36).substr(2, 9),
+              type: 'OUT',
+              voucherType: 'PAYMENT',
+              amount: ledgerForm.amountPaid,
+              mode: ledgerForm.paymentMode,
+              date: ledgerForm.date,
+              sourceId: viewDetail.id,
+              sourceName: viewDetail.name,
+              category: `INVESTMENT_${viewDetail.type}`,
+              notes: `${viewDetail.type} Payment - Month ${monthNum}`
+           };
+           try {
+              const savedPayment = await paymentAPI.create(newPayment);
+              setPayments(prev => [savedPayment, ...prev]);
+           } catch {
+              // If payment API fails, still add locally so ledger is consistent
+              setPayments(prev => [newPayment, ...prev]);
+           }
+           alert("Ledger updated & Bank Balance Reduced.");
+        }
+
+        setShowLedgerEntry(null);
+        setShowPremiumEntry(false);
+        setLedgerForm({ amountPaid: 0, dividend: 0, date: Date.now(), paymentMode: 'CASH' });
+     } catch (error) {
+        console.error('Failed to save ledger entry:', error);
+        alert('Failed to save ledger entry. Please try again.');
+     } finally {
+        setIsSubmitting(false);
+     }
   };
 
   const openPrizeModal = () => {
@@ -183,27 +205,10 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
     }
   };
 
-  const confirmPrize = () => {
-    if (!viewDetail || !viewDetail.chitConfig) return;
-    
-    // 1. Create Receipt Voucher Automatically
-    if (setPayments) {
-        const receiptVoucher: Payment = {
-            id: Math.random().toString(36).substr(2, 9),
-            type: 'IN', // Money Coming In
-            voucherType: 'RECEIPT',
-            amount: prizeForm.amount,
-            mode: prizeForm.depositMode,
-            date: Date.now(),
-            sourceId: viewDetail.id,
-            sourceName: viewDetail.name,
-            category: 'CHIT_SAVINGS', // Correct Category for AccountsManager
-            notes: `Prize Money Received - Month ${prizeForm.month} (Bid: ₹${prizeForm.bidAmount})`
-        };
-        setPayments(prev => [receiptVoucher, ...prev]);
-    }
+  const confirmPrize = async () => {
+    if (!viewDetail || !viewDetail.chitConfig || isSubmitting) return;
+    setIsSubmitting(true);
 
-    // 2. Update Investment State
     const updatedInv: Investment = {
        ...viewDetail,
        chitConfig: {
@@ -213,10 +218,89 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
           prizeMonth: prizeForm.month
        }
     };
-    setInvestments(prev => prev.map(inv => inv.id === viewDetail.id ? updatedInv : inv));
-    setViewDetail(updatedInv);
-    setShowPrizeModal(false);
-    alert(`Prize Declared! ₹${prizeForm.amount.toLocaleString()} receipt voucher created.`);
+
+    try {
+       // Persist investment update to backend
+       await investmentAPI.update(viewDetail.id, updatedInv);
+
+       // 1. Create Receipt Voucher Automatically
+       if (setPayments) {
+           const receiptVoucher: Payment = {
+               id: Math.random().toString(36).substr(2, 9),
+               type: 'IN',
+               voucherType: 'RECEIPT',
+               amount: prizeForm.amount,
+               mode: prizeForm.depositMode,
+               date: Date.now(),
+               sourceId: viewDetail.id,
+               sourceName: viewDetail.name,
+               category: 'CHIT_SAVINGS',
+               notes: `Prize Money Received - Month ${prizeForm.month} (Bid: ₹${prizeForm.bidAmount})`
+           };
+           try {
+              const savedPayment = await paymentAPI.create(receiptVoucher);
+              setPayments(prev => [savedPayment, ...prev]);
+           } catch {
+              setPayments(prev => [receiptVoucher, ...prev]);
+           }
+       }
+
+       // 2. Update Investment State
+       setInvestments(prev => prev.map(inv => inv.id === viewDetail.id ? updatedInv : inv));
+       setViewDetail(updatedInv);
+       setShowPrizeModal(false);
+       alert(`Prize Declared! ₹${prizeForm.amount.toLocaleString()} receipt voucher created.`);
+    } catch (error) {
+       console.error('Failed to declare prize:', error);
+       alert('Failed to declare prize. Please try again.');
+    } finally {
+       setIsSubmitting(false);
+    }
+  };
+
+  const handleDeleteLedgerEntry = async (monthNum: number) => {
+    if (!viewDetail || deletingLedgerMonth !== null || isSubmitting) return;
+    if (!window.confirm(`Delete Month ${monthNum} ledger entry? This will also remove the linked voucher.`)) return;
+    setDeletingLedgerMonth(monthNum);
+    try {
+      const txn = viewDetail.transactions?.find(t => t.month === monthNum);
+      if (!txn) return;
+
+      // Build updated investment without this transaction
+      const updatedInv: Investment = {
+        ...viewDetail,
+        transactions: (viewDetail.transactions || []).filter(t => t.month !== monthNum)
+      };
+      await investmentAPI.update(viewDetail.id, updatedInv);
+      setInvestments(prev => prev.map(inv => inv.id === viewDetail.id ? updatedInv : inv));
+      setViewDetail(updatedInv);
+
+      // Find and delete the linked payment voucher
+      if (setPayments && payments) {
+        // Try by paymentId first, then fallback to matching notes
+        const linkedPaymentId = (txn as any).paymentId;
+        let matchedPayment = linkedPaymentId
+          ? payments.find(p => p.id === linkedPaymentId)
+          : payments.find(p =>
+              p.sourceId === viewDetail.id &&
+              (p.category === 'INVESTMENT_CHIT_SAVINGS' || p.category === `INVESTMENT_${viewDetail.type}`) &&
+              (p.notes?.includes(`Month ${monthNum}`) ?? false)
+            );
+        if (matchedPayment) {
+          try {
+            await paymentAPI.delete(matchedPayment.id);
+            setPayments(prev => prev.filter(p => p.id !== matchedPayment!.id));
+          } catch {
+            // Still continue even if payment delete fails
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Failed to delete ledger entry:', error);
+      alert('Failed to delete ledger entry. Please try again.');
+    } finally {
+      setDeletingLedgerMonth(null);
+    }
   };
 
   const formatDate = (ts: number) => new Date(ts).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
@@ -229,12 +313,35 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
           <h2 className="text-3xl font-display font-black text-slate-900 uppercase italic tracking-tighter">Savings Hub</h2>
           <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">Asset Portfolio & Policies</p>
         </div>
-        <button 
-          onClick={() => { setEditingId(null); setFormData(initialForm); setShowForm(true); }} 
-          className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-xl font-black text-xs uppercase tracking-widest shadow-lg transform hover:scale-105 transition-all flex items-center gap-2"
-        >
-          <i className="fas fa-plus"></i> Record Investment
-        </button>
+        <div className="flex items-center gap-3">
+          {/* View Toggle */}
+          <div className="flex bg-slate-100 p-1 rounded-xl gap-1">
+            <button
+              onClick={() => setViewMode('card')}
+              title="Card View"
+              className={`h-9 w-9 rounded-lg flex items-center justify-center transition-all ${
+                viewMode === 'card' ? 'bg-white shadow text-blue-600' : 'text-slate-400 hover:text-slate-600'
+              }`}
+            >
+              <i className="fas fa-th-large text-xs"></i>
+            </button>
+            <button
+              onClick={() => setViewMode('list')}
+              title="List View"
+              className={`h-9 w-9 rounded-lg flex items-center justify-center transition-all ${
+                viewMode === 'list' ? 'bg-white shadow text-blue-600' : 'text-slate-400 hover:text-slate-600'
+              }`}
+            >
+              <i className="fas fa-list text-xs"></i>
+            </button>
+          </div>
+          <button 
+            onClick={() => { setEditingId(null); setFormData(initialForm); setShowForm(true); }} 
+            className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-xl font-black text-xs uppercase tracking-widest shadow-lg transform hover:scale-105 transition-all flex items-center gap-2"
+          >
+            <i className="fas fa-plus"></i> Record Investment
+          </button>
+        </div>
       </div>
 
       {/* FILTER BAR */}
@@ -268,64 +375,216 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
         </div>
       </div>
 
-      {/* INVESTMENT GRID */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {filteredInvestments.map(inv => {
-          const approxInvested = calculateApproxInvested(inv);
-          const isChit = inv.type === 'CHIT_SAVINGS';
-          const progress = isChit && inv.chitConfig 
-             ? ((inv.transactions?.length || 0) / inv.chitConfig.durationMonths) * 100 
-             : inv.maturityDate 
-                ? Math.min(100, Math.max(0, ((Date.now() - inv.startDate) / (inv.maturityDate - inv.startDate)) * 100)) 
-                : 0;
-
-          return (
-            <div key={inv.id} onClick={() => setViewDetail(inv)} className={`cursor-pointer bg-white rounded-[2rem] border border-slate-200 shadow-sm p-8 hover:shadow-lg transition-all group hover:border-blue-200 ${isChit ? 'border-yellow-100 bg-yellow-50/10' : ''}`}>
-              <div className="flex justify-between items-start mb-6">
-                <div className={`h-12 w-12 rounded-2xl flex items-center justify-center group-hover:scale-110 transition-transform ${isChit ? 'bg-yellow-50 text-yellow-600' : 'bg-blue-50 text-blue-600'}`}>
-                  <i className={`fas ${isChit ? 'fa-users-viewfinder' : 'fa-piggy-bank'} text-xl`}></i>
+      {/* CARD VIEW */}
+      {viewMode === 'card' && (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+          {filteredInvestments.length === 0 && (
+            <div className="col-span-full py-16 text-center text-xs font-black text-slate-400 uppercase tracking-widest">No investments found.</div>
+          )}
+          {filteredInvestments.map((inv) => {
+            const approxInvested = calculateApproxInvested(inv);
+            const isChit = inv.type === 'CHIT_SAVINGS';
+            const paidMonths = inv.transactions?.length || 0;
+            const durationMonths = inv.chitConfig?.durationMonths || 0;
+            const startDate = new Date(inv.startDate);
+            const monthDueDate = isChit && paidMonths < durationMonths
+              ? new Date(startDate.getFullYear(), startDate.getMonth() + paidMonths, startDate.getDate())
+              : null;
+            const isOverdue = monthDueDate && monthDueDate < new Date();
+            const fmtDate = (d: Date | null) => d
+              ? d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+              : '—';
+            return (
+              <div key={inv.id} onClick={() => setViewDetail(inv)}
+                className="bg-white rounded-[2rem] border border-slate-200 shadow-sm hover:shadow-lg hover:border-blue-200 cursor-pointer transition-all p-6 flex flex-col gap-4">
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className={`h-10 w-10 rounded-xl flex items-center justify-center flex-shrink-0 ${isChit ? 'bg-yellow-50 text-yellow-600' : 'bg-blue-50 text-blue-600'}`}>
+                      <i className={`fas ${isChit ? 'fa-users-viewfinder' : 'fa-piggy-bank'} text-sm`}></i>
+                    </div>
+                    <div>
+                      <div className="font-black text-slate-800 uppercase text-xs">{inv.name}</div>
+                      <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-widest ${isChit ? 'bg-yellow-100 text-yellow-700' : 'bg-blue-100 text-blue-700'}`}>
+                        {inv.type.replace(/_/g, ' ')}
+                      </span>
+                    </div>
+                  </div>
+                  {isChit && inv.chitConfig?.isPrized && (
+                    <span className="bg-blue-500 text-white px-2 py-1 rounded-full text-[8px] font-black uppercase">Won</span>
+                  )}
                 </div>
-                {isChit && inv.chitConfig?.isPrized && (
-                   <span className="bg-blue-500 text-white px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest shadow-md animate-pulse">
-                      Won
-                   </span>
-                )}
-                <button onClick={(e) => { e.stopPropagation(); setFormData(inv); setEditingId(inv.id); setShowForm(true); }} className="text-slate-300 hover:text-blue-600 transition"><i className="fas fa-pen"></i></button>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="bg-slate-50 rounded-xl p-3">
+                    <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Chit Value</div>
+                    <div className="font-black text-slate-800 text-sm">{inv.chitConfig?.chitValue ? `₹${inv.chitConfig.chitValue.toLocaleString()}` : '—'}</div>
+                  </div>
+                  <div className="bg-slate-50 rounded-xl p-3">
+                    <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Invested</div>
+                    <div className="font-black text-slate-900 text-sm">₹{approxInvested.toLocaleString()}</div>
+                  </div>
+                  <div className="bg-slate-50 rounded-xl p-3">
+                              <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Monthly Payable</div>
+                              <div className="font-black text-xs text-slate-700">
+                                 {isChit && inv.chitConfig?.monthlyInstallment ? `₹${inv.chitConfig.monthlyInstallment.toLocaleString()}` : '—'}
+                              </div>
+                  </div>
+                  <div className="bg-slate-50 rounded-xl p-3">
+                    <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Progress</div>
+                    <div className="font-black text-slate-700 text-sm">
+                      {isChit ? `${paidMonths}/${durationMonths}` : `${Math.round(inv.maturityDate && inv.startDate ? Math.min(100, Math.max(0, ((Date.now() - inv.startDate) / (inv.maturityDate - inv.startDate)) * 100)) : 0)}%`}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex justify-end pt-1">
+                  <button onClick={(e) => { e.stopPropagation(); setFormData(inv); setEditingId(inv.id); setShowForm(true); }}
+                    className="h-8 w-8 rounded-full bg-slate-100 text-slate-400 hover:bg-blue-600 hover:text-white transition flex items-center justify-center">
+                    <i className="fas fa-pen text-[9px]"></i>
+                  </button>
+                </div>
               </div>
-              
-              <h3 className="text-xl font-display font-black text-slate-900 italic tracking-tighter uppercase mb-1">{inv.name}</h3>
-              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-6">{inv.provider} • {inv.type.replace('_', ' ')}</p>
-              
-              <div className="space-y-4">
-                <div className="flex justify-between items-center text-xs">
-                  <span className="font-black text-slate-400 uppercase tracking-widest">{isChit ? 'Total Paid' : 'Invested'}</span>
-                  <span className="font-black text-slate-900 font-display text-lg">₹{approxInvested.toLocaleString()}</span>
-                </div>
-                {isChit && inv.chitConfig && (
-                   <div className="flex justify-between items-center text-xs">
-                     <span className="font-black text-slate-400 uppercase tracking-widest">Progress</span>
-                     <span className="font-black text-yellow-600 font-display">{inv.transactions?.length}/{inv.chitConfig.durationMonths} Mos</span>
-                   </div>
-                )}
-                {!isChit && (
-                   <div className="flex justify-between items-center text-xs">
-                     <span className="font-black text-slate-400 uppercase tracking-widest">Maturity Value</span>
-                     <span className="font-black text-emerald-600 font-display text-lg">₹{(inv.expectedMaturityValue || 0).toLocaleString()}</span>
-                   </div>
-                )}
-                
-                <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden mt-2">
-                   <div className={`h-full ${isChit ? 'bg-yellow-500' : 'bg-blue-500'}`} style={{ width: `${progress}%` }}></div>
-                </div>
+            );
+          })}
+        </div>
+      )}
 
-                <div className="pt-2 text-[10px] text-blue-500 font-black uppercase tracking-widest text-center opacity-0 group-hover:opacity-100 transition-opacity">
-                   Click to view ledger
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      {/* INVESTMENT LIST VIEW */}
+      {viewMode === 'list' && <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-xl overflow-hidden overflow-x-auto">
+        <table className="min-w-full divide-y divide-slate-100 text-xs">
+          <thead className="bg-slate-50">
+            <tr>
+              <th className="px-4 py-4 text-left text-[9px] font-black text-slate-400 uppercase tracking-widest">S.No</th>
+              <th className="px-4 py-4 text-left text-[9px] font-black text-slate-400 uppercase tracking-widest">Name</th>
+              <th className="px-4 py-4 text-left text-[9px] font-black text-slate-400 uppercase tracking-widest">Type</th>
+              <th className="px-4 py-4 text-right text-[9px] font-black text-slate-400 uppercase tracking-widest">Chit Value</th>
+              <th className="px-4 py-4 text-left text-[9px] font-black text-slate-400 uppercase tracking-widest">Monthly Payable</th>
+              <th className="px-4 py-4 text-left text-[9px] font-black text-slate-400 uppercase tracking-widest">Start Date</th>
+              <th className="px-4 py-4 text-left text-[9px] font-black text-slate-400 uppercase tracking-widest">End Date</th>
+              <th className="px-4 py-4 text-right text-[9px] font-black text-slate-400 uppercase tracking-widest">Invested</th>
+              <th className="px-4 py-4 text-left text-[9px] font-black text-slate-400 uppercase tracking-widest">Progress</th>
+              <th className="px-4 py-4 text-center text-[9px] font-black text-slate-400 uppercase tracking-widest">Edit</th>
+            </tr>
+          </thead>
+          <tbody className="bg-white divide-y divide-slate-50">
+            {filteredInvestments.length === 0 && (
+              <tr><td colSpan={10} className="px-6 py-12 text-center text-xs font-bold text-slate-400">No investments found.</td></tr>
+            )}
+            {filteredInvestments.map((inv, idx) => {
+              const approxInvested = calculateApproxInvested(inv);
+              const isChit = inv.type === 'CHIT_SAVINGS';
+              const paidMonths = inv.transactions?.length || 0;
+              const durationMonths = inv.chitConfig?.durationMonths || 0;
+
+              // Start date from stored timestamp
+              const startDate = new Date(inv.startDate);
+
+              // End date: startDate + durationMonths (for chit) or stored maturityDate
+              const endDate = isChit && durationMonths > 0
+                ? new Date(startDate.getFullYear(), startDate.getMonth() + durationMonths, startDate.getDate())
+                : inv.maturityDate ? new Date(inv.maturityDate) : null;
+
+              // Month Due: next unpaid installment date = startDate + paidMonths months
+              // e.g. if start is Jan 1 and 3 months paid, Month 4 is due on Apr 1
+              const monthDueDate = isChit && paidMonths < durationMonths
+                ? new Date(startDate.getFullYear(), startDate.getMonth() + paidMonths, startDate.getDate())
+                : null;
+
+              const fmtDate = (d: Date | null) => d
+                ? d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+                : '—';
+
+              const isOverdue = monthDueDate && monthDueDate < new Date();
+
+              const progress = isChit && durationMonths > 0
+                ? (paidMonths / durationMonths) * 100
+                : endDate && inv.maturityDate
+                  ? Math.min(100, Math.max(0, ((Date.now() - inv.startDate) / (inv.maturityDate - inv.startDate)) * 100))
+                  : 0;
+
+              return (
+                <tr key={inv.id} onClick={() => setViewDetail(inv)} className="hover:bg-blue-50/30 cursor-pointer transition-colors">
+                  <td className="px-4 py-4 font-black text-slate-400 text-center">{idx + 1}</td>
+                  <td className="px-4 py-4">
+                    <div className="flex items-center gap-2">
+                      <div className={`h-8 w-8 rounded-xl flex items-center justify-center flex-shrink-0 ${isChit ? 'bg-yellow-50 text-yellow-600' : 'bg-blue-50 text-blue-600'}`}>
+                        <i className={`fas ${isChit ? 'fa-users-viewfinder' : 'fa-piggy-bank'} text-xs`}></i>
+                      </div>
+                      <div>
+                        <div className="font-black text-slate-800 uppercase text-xs whitespace-nowrap">{inv.name}</div>
+                        {isChit && inv.chitConfig?.isPrized && (
+                          <span className="bg-blue-500 text-white px-2 py-0.5 rounded-full text-[8px] font-black uppercase">Won</span>
+                        )}
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-4 py-4">
+                    <span className={`px-2 py-1 rounded-full text-[9px] font-black uppercase tracking-widest whitespace-nowrap ${isChit ? 'bg-yellow-100 text-yellow-700' : 'bg-blue-100 text-blue-700'}`}>
+                      {inv.type.replace(/_/g, ' ')}
+                    </span>
+                  </td>
+                  <td className="px-4 py-4 text-right font-black text-slate-700">
+                    {inv.chitConfig?.chitValue ? `₹${inv.chitConfig.chitValue.toLocaleString()}` : '—'}
+                  </td>
+                  <td className="px-4 py-4 whitespace-nowrap">
+                              {isChit && inv.chitConfig?.monthlyInstallment ? `₹${inv.chitConfig.monthlyInstallment.toLocaleString()}` : '—'}
+                  </td>
+                  <td className="px-4 py-4 text-xs font-bold text-slate-500 whitespace-nowrap">{fmtDate(startDate)}</td>
+                  <td className="px-4 py-4 text-xs font-bold text-slate-500 whitespace-nowrap">{fmtDate(endDate)}</td>
+                  <td className="px-4 py-4 text-right font-black text-slate-900 whitespace-nowrap">₹{approxInvested.toLocaleString()}</td>
+                  <td className="px-4 py-4">
+                    <span className="text-xs font-black text-slate-700">
+                      {isChit ? `${paidMonths}/${durationMonths}` : `${Math.round(progress)}%`}
+                    </span>
+                  </td>
+                  <td className="px-4 py-4 text-center">
+                    <button onClick={(e) => { e.stopPropagation(); setFormData(inv); setEditingId(inv.id); setShowForm(true); }}
+                      className="h-7 w-7 rounded-full bg-slate-100 text-slate-400 hover:bg-blue-600 hover:text-white transition flex items-center justify-center mx-auto">
+                      <i className="fas fa-pen text-[9px]"></i>
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+          {/* TOTAL ROW */}
+          <tfoot>
+            <tr className="bg-slate-900">
+              {/* Col 1-3: label */}
+              <td colSpan={3} className="px-6 py-4 font-black text-white uppercase text-[10px] tracking-widest whitespace-nowrap">
+                Total — {filteredInvestments.length} {filteredInvestments.length === 1 ? 'Investment' : 'Investments'}
+              </td>
+              {/* Col 4: Chit Value total */}
+              <td className="px-4 py-4 text-right font-mono font-black text-amber-300 text-xs whitespace-nowrap">
+                ₹{filteredInvestments.reduce((s, inv) => s + (inv.chitConfig?.chitValue || 0), 0).toLocaleString()}
+              </td>
+              {/* Col 5: Monthly Payable total */}
+              <td className="px-4 py-4 text-left font-mono font-black text-amber-300 text-xs whitespace-nowrap">
+                ₹{filteredInvestments.reduce((s, inv) => s + (inv.chitConfig?.monthlyInstallment || 0), 0).toLocaleString()}
+              </td>
+              {/* Col 6-7: dates — blank */}
+              <td colSpan={2}></td>
+              {/* Col 8: Total Invested */}
+              <td className="px-4 py-4 text-right font-mono font-black text-white text-sm whitespace-nowrap">
+                ₹{filteredInvestments.reduce((s, inv) => s + calculateApproxInvested(inv), 0).toLocaleString()}
+              </td>
+              {/* Col 9: Avg Month Count */}
+              <td className="px-4 py-4 text-left whitespace-nowrap">
+                {(() => {
+                  if (filteredInvestments.length === 0) return null;
+                  const totalPaid = filteredInvestments.reduce((s, inv) => s + (inv.transactions?.length || 0), 0);
+                  const avgPaid = Math.round(totalPaid / filteredInvestments.length);
+                  return (
+                    <span className="text-[10px] font-black text-amber-300">
+                      Avg {avgPaid} mo
+                    </span>
+                  );
+                })()}
+              </td>
+              {/* Col 10: Edit — blank */}
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>}
 
       {/* DETAIL MODAL (Supports specialized CHIT & Standard View) */}
       {viewDetail && (
@@ -440,6 +699,7 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
                                        <th className="px-6 py-4 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Dividend</th>
                                        <th className="px-6 py-4 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Paid</th>
                                        <th className="px-6 py-4 text-center text-[10px] font-black text-slate-400 uppercase tracking-widest">Status</th>
+                                       <th className="px-6 py-4 text-center text-[10px] font-black text-slate-400 uppercase tracking-widest">Del</th>
                                     </tr>
                                  </thead>
                                  <tbody className="bg-white divide-y divide-slate-50">
@@ -459,6 +719,19 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
                                                    <span className="bg-emerald-100 text-emerald-700 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest">Paid</span>
                                                 ) : (
                                                    <button onClick={() => setShowLedgerEntry({ month: monthNum, invId: viewDetail.id })} className="bg-blue-600 text-white px-3 py-1 rounded text-[9px] font-black uppercase tracking-widest hover:bg-yellow-500 hover:text-blue-900 transition">Pay Now</button>
+                                                )}
+                                             </td>
+                                             <td className="px-6 py-4 text-center">
+                                                {isPaid && (
+                                                   <button
+                                                      onClick={() => handleDeleteLedgerEntry(monthNum)}
+                                                      disabled={deletingLedgerMonth === monthNum}
+                                                      className="h-7 w-7 rounded-full bg-rose-50 text-rose-500 flex items-center justify-center hover:bg-rose-500 hover:text-white transition disabled:opacity-40 mx-auto"
+                                                   >
+                                                      {deletingLedgerMonth === monthNum
+                                                         ? <i className="fas fa-spinner fa-spin text-[9px]"></i>
+                                                         : <i className="fas fa-trash-alt text-[9px]"></i>}
+                                                   </button>
                                                 )}
                                              </td>
                                           </tr>
@@ -593,7 +866,7 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
                      <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Date</label>
                      <input type="date" className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 font-bold text-slate-500 outline-none focus:border-blue-500" value={new Date(ledgerForm.date).toISOString().substr(0,10)} onChange={e => setLedgerForm({...ledgerForm, date: new Date(e.target.value).getTime()})} />
                   </div>
-                  <button onClick={handleLedgerSave} className="w-full py-3 bg-blue-600 text-white rounded-xl font-black uppercase tracking-widest hover:bg-blue-700 shadow-lg mt-2">Save Voucher</button>
+                  <button onClick={handleLedgerSave} disabled={isSubmitting} className="w-full py-3 bg-blue-600 text-white rounded-xl font-black uppercase tracking-widest hover:bg-blue-700 shadow-lg mt-2 disabled:opacity-50 disabled:cursor-not-allowed">{isSubmitting ? 'Saving...' : 'Save Voucher'}</button>
                   <button onClick={() => { setShowLedgerEntry(null); setShowPremiumEntry(false); }} className="w-full py-3 text-slate-400 font-black uppercase tracking-widest hover:text-slate-600">Cancel</button>
                </div>
             </div>
@@ -647,7 +920,7 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
                   </div>
                   
                   <div className="pt-2">
-                     <button onClick={confirmPrize} className="w-full py-4 bg-blue-600 text-white rounded-xl font-black uppercase tracking-widest hover:bg-blue-700 shadow-xl transition transform hover:scale-105">Confirm Victory</button>
+                     <button onClick={confirmPrize} disabled={isSubmitting} className="w-full py-4 bg-blue-600 text-white rounded-xl font-black uppercase tracking-widest hover:bg-blue-700 shadow-xl transition transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed">{isSubmitting ? 'Saving...' : 'Confirm Victory'}</button>
                      <button onClick={() => setShowPrizeModal(false)} className="w-full py-3 mt-2 text-slate-400 font-black uppercase tracking-widest hover:text-slate-600">Cancel</button>
                   </div>
                </div>

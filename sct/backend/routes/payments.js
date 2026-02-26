@@ -27,8 +27,8 @@ router.get('/', authenticate, async (req, res) => {
 
     const snapshot = await query.orderBy('date', 'desc').get();
     let payments = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data()
+      ...doc.data(),
+      id: doc.id
     }));
 
     // Filter by date range if provided
@@ -56,7 +56,7 @@ router.get('/:id', authenticate, async (req, res) => {
       return res.status(404).json({ error: { message: 'Payment not found' } });
     }
 
-    res.json({ id: doc.id, ...doc.data() });
+    res.json({ ...doc.data(), id: doc.id });
   } catch (error) {
     console.error('Get payment error:', error);
     res.status(500).json({ error: { message: 'Failed to fetch payment' } });
@@ -81,8 +81,9 @@ router.post('/', [
       return res.status(400).json({ errors: errors.array() });
     }
 
+    const { id: _clientId, ...bodyData } = req.body;
     const paymentData = {
-      ...req.body,
+      ...bodyData,
       createdAt: Date.now(),
       createdBy: req.user.id
     };
@@ -124,9 +125,11 @@ router.post('/', [
       userId: req.user.id
     });
 
+    // Spread paymentData first, then override id with the real Firestore ID
+    // (paymentData may contain a local temp id from the client — we always win)
     res.status(201).json({ 
-      id: docRef.id, 
-      ...paymentData 
+      ...paymentData,
+      id: docRef.id
     });
   } catch (error) {
     console.error('Create payment error:', error);

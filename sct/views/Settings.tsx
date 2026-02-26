@@ -228,6 +228,14 @@ const Settings: React.FC<SettingsProps> = ({
       banks: prev.banks.map(b => b.id === id ? { ...b, [field]: value } : b)
     }));
   };
+
+  const handleDeleteBank = (id: string) => {
+    if (!window.confirm('Remove this bank account? This will also remove it from the General Ledger.')) return;
+    setTempBankingConfig(prev => ({ ...prev, banks: prev.banks.filter(b => b.id !== id) }));
+    if (setBankAccounts) {
+      setBankAccounts(prev => prev.filter(b => b.id !== id));
+    }
+  };
   
   // Save banking configuration (REPLACE actual values with temp values)
   const handleSaveBankingConfig = () => {
@@ -720,9 +728,13 @@ const Settings: React.FC<SettingsProps> = ({
                              <input type="number" className="w-full bg-slate-50 border-none rounded-lg px-2 py-1.5 font-bold text-xs outline-none focus:ring-1 focus:ring-indigo-100 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={bank.openingBalance} onChange={e => updateTempBank(bank.id, 'openingBalance', Number(e.target.value))} />
                           </div>
                        </div>
-                       <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <i className="fas fa-university text-slate-200"></i>
-                       </div>
+                       <button
+                         onClick={() => handleDeleteBank(bank.id)}
+                         className="absolute top-2 right-2 h-6 w-6 rounded-full bg-rose-50 text-rose-400 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center hover:bg-rose-500 hover:text-white"
+                         title="Remove bank account"
+                       >
+                         <i className="fas fa-trash-alt text-[9px]"></i>
+                       </button>
                     </div>
                  ))}
 

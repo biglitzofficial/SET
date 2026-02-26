@@ -1,7 +1,6 @@
-
 import React, { useState, useMemo } from 'react';
 import { Payment, Customer, Invoice, UserRole, AuditLog, Liability, Investment, InvestmentTransaction, StaffUser, BankAccount } from '../types';
-import { paymentAPI, invoiceAPI } from '../services/api';
+import { paymentAPI, invoiceAPI, liabilityAPI, investmentAPI } from '../services/api';
 
 interface AccountsManagerProps {
   payments: Payment[];
@@ -26,7 +25,7 @@ interface AccountsManagerProps {
   setBankAccounts: React.Dispatch<React.SetStateAction<BankAccount[]>>;
 }
 
-type PurposeType = 'ROYALTY' | 'INTEREST' | 'CHIT' | 'PRINCIPAL_RECOVERY' | 'GENERAL' | 'EXPENSE' | 'TRANSFER' | 'LOAN_INTEREST' | 'LOAN_REPAYMENT' | 'OTHER_BUSINESS' | 'CHIT_SAVINGS' | 'DIRECT_INCOME' | 'SAVINGS';
+type PurposeType = 'ROYALTY' | 'INTEREST' | 'CHIT' | 'PRINCIPAL_RECOVERY' | 'GENERAL' | 'EXPENSE' | 'TRANSFER' | 'LOAN_INTEREST' | 'LOAN_REPAYMENT' | 'OTHER_BUSINESS' | 'CHIT_SAVINGS' | 'DIRECT_INCOME' | 'SAVINGS' | 'CHIT_FUND' | 'OVERALL';
 
 const AccountsManager: React.FC<AccountsManagerProps> = ({ 
   payments, setPayments, customers, setCustomers, invoices, setInvoices,
@@ -42,6 +41,12 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  // Voucher filter & pagination
+  const [voucherTypeFilter, setVoucherTypeFilter] = useState<'ALL' | 'IN' | 'OUT'>('ALL');
+  const [voucherCatFilter, setVoucherCatFilter] = useState<string>('ALL');
+  const [voucherSearch, setVoucherSearch] = useState<string>('');
+  const [voucherPage, setVoucherPage] = useState<number>(1);
+  const VOUCHER_PAGE_SIZE = 30;
   
   const [formData, setFormData] = useState<Partial<Payment>>({
     amount: 0,
@@ -54,6 +59,43 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
     businessUnit: ''
   });
 
+  // Purposes that operate on the customer pool — party should be preserved when switching between these
+  const CUSTOMER_PURPOSES: PurposeType[] = ['ROYALTY', 'INTEREST', 'CHIT', 'CHIT_FUND', 'GENERAL', 'PRINCIPAL_RECOVERY', 'OVERALL'];
+
+  const changePurpose = (newPurpose: PurposeType) => {
+    const currentIsCustomer = CUSTOMER_PURPOSES.includes(purpose) && selectedParty?.partyType === 'CUSTOMER';
+    const newIsCustomer = CUSTOMER_PURPOSES.includes(newPurpose);
+    setPurpose(newPurpose);
+    // Only clear the selected party & search when switching to a completely different pool type
+    if (!currentIsCustomer || !newIsCustomer) {
+      setAccountSearch('');
+      setSelectedParty(null);
+    }
+  };
+
+  const getOutstandingCategory = (breakdown: any, party?: any): PurposeType => {
+    const categories = ['chit', 'royalty', 'interest', 'principal'] as const;
+    let maxCat: string = 'GENERAL';
+    let maxVal = 0;
+    if (breakdown) {
+      for (const cat of categories) {
+        if (breakdown[cat] && breakdown[cat] > maxVal) {
+          maxVal = breakdown[cat];
+          maxCat = cat.toUpperCase();
+        }
+      }
+    }
+    // Map category key to purpose type
+    if (maxCat === 'CHIT') return 'CHIT_FUND';
+    if (maxCat === 'ROYALTY') return 'ROYALTY';
+    if (maxCat === 'INTEREST') return 'INTEREST';
+    // Fallback: use customer portfolio flags when all outstanding is zero
+    if (party?.isChit) return 'CHIT_FUND';
+    if (party?.isRoyalty) return 'ROYALTY';
+    if (party?.isInterest) return 'INTEREST';
+    return 'GENERAL';
+  };
+
   const selectParty = (party: any) => {
     setSelectedParty(party);
     setFormData({ 
@@ -64,36 +106,81 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
     });
     setAccountSearch(party.providerName || party.name);
     setShowResults(false);
+    // Always show OVERALL summary first so the user sees all category outstandings.
+    // They can then click a specific category button to post.
+    if (party.partyType === 'CUSTOMER' || !party.partyType) {
+      setPurpose('OVERALL');
+    }
   };
 
-  const getPartyBalance = (party: any, type: string, currentPurpose: PurposeType) => {
+  const getPartyBalance = (party: any, type: string, currentPurpose: PurposeType, signed = false) => {
     // 1. CUSTOMER BALANCES (INCOMING)
     if (type === 'CUSTOMER') {
       if (currentPurpose === 'PRINCIPAL_RECOVERY') return party.interestPrincipal || 0;
       
-      // For Income types, sum unpaid invoices
-      let validTypes: string[] = [];
-      if (currentPurpose === 'ROYALTY') validTypes = ['ROYALTY'];
-      else if (currentPurpose === 'INTEREST') validTypes = ['INTEREST'];
-      else if (currentPurpose === 'CHIT') validTypes = ['CHIT'];
-      else validTypes = ['ROYALTY', 'INTEREST', 'CHIT']; // General
+      // Separate invoice-type filter from payment-category filter so CHIT_FUND payments
+      // (which reference CHIT invoices) are correctly counted.
+      let validInvoiceTypes: string[] = [];
+      let validPaymentCats: string[] = [];
+      if (currentPurpose === 'ROYALTY') {
+        validInvoiceTypes = ['ROYALTY'];
+        validPaymentCats = ['ROYALTY'];
+      } else if (currentPurpose === 'INTEREST') {
+        // Interest ledger mirrors party ledger: includes the lending principal as opening
+        // and PRINCIPAL_RECOVERY repayments reduce the outstanding balance
+        validInvoiceTypes = ['INTEREST'];
+        validPaymentCats = ['INTEREST', 'PRINCIPAL_RECOVERY'];
+      } else if (currentPurpose === 'CHIT' || currentPurpose === 'CHIT_FUND') {
+        validInvoiceTypes = ['CHIT'];
+        validPaymentCats = ['CHIT', 'CHIT_FUND'];
+      } else {
+        // GENERAL / OVERALL: all categories combined
+        validInvoiceTypes = ['ROYALTY', 'INTEREST', 'CHIT'];
+        validPaymentCats = ['ROYALTY', 'INTEREST', 'CHIT', 'CHIT_FUND', 'PRINCIPAL_RECOVERY', 'GENERAL'];
+      }
 
-      const invoiceDue = invoices
-        .filter(i => i.customerId === party.id && !i.isVoid && validTypes.includes(i.type))
-        .reduce((sum, i) => sum + i.balance, 0);
-      
-      // Add general Opening Balance (Assets) to the total receivable
-      return invoiceDue + (party.openingBalance || 0);
+      // DR invoices (receivable — member owes us installments/fees)
+      const totalDR = invoices
+        .filter(i => i.customerId === party.id && !i.isVoid && validInvoiceTypes.includes(i.type) && i.direction !== 'OUT')
+        .reduce((sum, i) => sum + i.amount, 0);
+
+      // CR invoices (payouts we owe the member, e.g. chit prize)
+      const totalCRInvoice = invoices
+        .filter(i => i.customerId === party.id && !i.isVoid && validInvoiceTypes.includes(i.type) && i.direction === 'OUT')
+        .reduce((sum, i) => sum + i.amount, 0);
+
+      // Cash receipts already received (IN payments reduce what party owes us)
+      const totalCRPayment = payments
+        .filter(p => p.sourceId === party.id && p.type === 'IN' && validPaymentCats.includes(p.category))
+        .reduce((sum, p) => sum + p.amount, 0);
+
+      // OUT payments we made to the party (reduce what we owe them — DR side in ledger)
+      const totalOutPayment = payments
+        .filter(p => p.sourceId === party.id && p.type === 'OUT' && validPaymentCats.includes(p.category))
+        .reduce((sum, p) => sum + p.amount, 0);
+
+      // Opening balance per category:
+      // OVERALL = openingBalance + interestPrincipal (full combined picture)
+      // GENERAL = openingBalance only
+      // INTEREST = 0 — shows only accrued interest invoices minus payments (principal tracked separately under PRINCIPAL_RECOVERY)
+      const openingAdj = currentPurpose === 'OVERALL'
+        ? (party.openingBalance || 0) + (party.interestPrincipal || 0)
+        : currentPurpose === 'GENERAL'
+          ? (party.openingBalance || 0)
+          : 0;
+
+      const net = totalDR - totalCRInvoice - totalCRPayment + totalOutPayment + openingAdj;
+      return signed ? net : Math.max(0, net);
     } 
     
     // 2. LIABILITY BALANCES (OUTGOING)
     if (type === 'LIABILITY') {
-      if (currentPurpose === 'LOAN_REPAYMENT') return party.principal || 0; // Principal outstanding
+      if (currentPurpose === 'LOAN_REPAYMENT') return party.principal || 0;
       if (currentPurpose === 'LOAN_INTEREST') {
-         // Check for Interest Out invoices
          return invoices
            .filter(i => i.lenderId === party.id && !i.isVoid && i.type === 'INTEREST_OUT')
-           .reduce((sum, i) => sum + i.balance, 0);
+           .reduce((sum, i) => sum + i.amount, 0)
+           - payments.filter(p => p.sourceId === party.id && p.type === 'OUT' && p.category === 'LOAN_INTEREST').reduce((sum, p) => sum + p.amount, 0);
       }
     }
 
@@ -116,17 +203,31 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
     return 0;
   };
 
+  const getCustomerStats = (cid: string) => {
+    const cust = customers.find(c => c.id === cid);
+    const custInvoices = invoices.filter(inv => inv.customerId === cid);
+    const totalRaised = custInvoices.reduce((acc, inv) => acc + inv.amount, 0);
+    const totalOutstanding = custInvoices.reduce((acc, inv) => acc + inv.balance, 0);
+    // Add opening balance to total outstanding
+    return { totalRaised, totalPaid: totalRaised - totalOutstanding, totalOutstanding: totalOutstanding + (cust?.openingBalance || 0) };
+  };
+
   const availableParties = useMemo(() => {
     const search = accountSearch.toLowerCase();
     let pool: any[] = [];
     
     if (direction === 'IN') {
       // Filter strictly based on Purpose
-      if (purpose === 'ROYALTY') {
+      if (purpose === 'OVERALL') {
+         // Overview mode: all active customers, shows full category breakdown
+         pool = customers.filter(c => c.status === 'ACTIVE');
+      } else if (purpose === 'ROYALTY') {
          pool = customers.filter(c => c.isRoyalty && c.status === 'ACTIVE');
       } else if (purpose === 'INTEREST' || purpose === 'PRINCIPAL_RECOVERY') {
          pool = customers.filter(c => c.isInterest && c.status === 'ACTIVE');
       } else if (purpose === 'CHIT') {
+         pool = customers.filter(c => c.isChit && c.status === 'ACTIVE');
+      } else if (purpose === 'CHIT_FUND') {
          pool = customers.filter(c => c.isChit && c.status === 'ACTIVE');
       } else if (purpose === 'OTHER_BUSINESS') {
          pool = otherBusinesses.map(b => ({ id: `BIZ_${b}`, name: b, partyType: 'BUSINESS_UNIT' }));
@@ -148,15 +249,26 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
         .filter(p => p.name.toLowerCase().includes(search))
         .map(p => {
             const pType = p.partyType || 'CUSTOMER';
-            
-            // Calculate Breakdown for Customers
             let breakdown = undefined;
             if (pType === 'CUSTOMER') {
                const custInvoices = invoices.filter(i => i.customerId === p.id && !i.isVoid);
+               const custPaymentsIn  = payments.filter(pay => pay.sourceId === p.id && pay.type === 'IN');
+               const custPaymentsOut = payments.filter(pay => pay.sourceId === p.id && pay.type === 'OUT');
+               // Chit net = (CHIT IN installments) - (CHIT OUT payouts) - (IN receipts) + (OUT payments we made)
+               const chitInvoices = custInvoices.filter(i => i.type === 'CHIT');
+               const chitNet =
+                  chitInvoices.filter(i => i.direction !== 'OUT').reduce((sum, i) => sum + i.amount, 0)
+                  - chitInvoices.filter(i => i.direction === 'OUT').reduce((sum, i) => sum + i.amount, 0)
+                  - custPaymentsIn.filter(pay => pay.category === 'CHIT' || pay.category === 'CHIT_FUND').reduce((sum, pay) => sum + pay.amount, 0)
+                  + custPaymentsOut.filter(pay => pay.category === 'CHIT' || pay.category === 'CHIT_FUND').reduce((sum, pay) => sum + pay.amount, 0);
                breakdown = {
-                  royalty: custInvoices.filter(i => i.type === 'ROYALTY').reduce((sum, i) => sum + i.balance, 0),
-                  interest: custInvoices.filter(i => i.type === 'INTEREST').reduce((sum, i) => sum + i.balance, 0),
-                  chit: custInvoices.filter(i => i.type === 'CHIT' && i.direction === 'IN').reduce((sum, i) => sum + i.balance, 0),
+                  royalty: custInvoices.filter(i => i.type === 'ROYALTY').reduce((sum, i) => sum + i.amount, 0)
+                             - custPaymentsIn.filter(pay => pay.category === 'ROYALTY').reduce((sum, pay) => sum + pay.amount, 0)
+                             + custPaymentsOut.filter(pay => pay.category === 'ROYALTY').reduce((sum, pay) => sum + pay.amount, 0),
+                  interest: custInvoices.filter(i => i.type === 'INTEREST').reduce((sum, i) => sum + i.amount, 0)
+                              - custPaymentsIn.filter(pay => pay.category === 'INTEREST').reduce((sum, pay) => sum + pay.amount, 0)
+                              + custPaymentsOut.filter(pay => pay.category === 'INTEREST').reduce((sum, pay) => sum + pay.amount, 0),
+                  chit: chitNet,
                   principal: p.interestPrincipal || 0,
                   opening: Math.max(0, p.openingBalance || 0)
                };
@@ -172,48 +284,86 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
 
     } else {
       // OUTGOING
-      if (purpose === 'EXPENSE') {
+      if (purpose === 'OVERALL') {
+        pool = customers.filter(c => c.status === 'ACTIVE');
+      } else if (purpose === 'EXPENSE') {
         pool = expenseCategories.map(c => ({ id: c, name: c, partyType: 'EXPENSE_CAT' }));
       } else if (purpose === 'GENERAL') {
-        // General out-payment to a customer (refunds, advances, etc.)
         pool = customers.filter(c => c.status === 'ACTIVE');
+      } else if (purpose === 'CHIT_FUND') {
+        // OUT CHIT_FUND: paying chit prize / settlement to a chit member
+        pool = customers.filter(c => c.isChit && c.status === 'ACTIVE');
+      } else if (purpose === 'ROYALTY') {
+        // OUT ROYALTY: refund or adjustment to a royalty member
+        pool = customers.filter(c => c.isRoyalty && c.status === 'ACTIVE');
+      } else if (purpose === 'INTEREST') {
+        // OUT INTEREST: repayment or adjustment for interest/lending customers
+        pool = customers.filter(c => c.isInterest && c.status === 'ACTIVE');
       } else if (purpose === 'LOAN_REPAYMENT' || purpose === 'LOAN_INTEREST') {
         pool = liabilities.filter(l => l.status === 'ACTIVE').map(l => ({ ...l, name: l.providerName, partyType: 'LIABILITY' }));
       } else if (purpose === 'OTHER_BUSINESS') {
          pool = otherBusinesses.map(b => ({ id: `BIZ_${b}`, name: b, partyType: 'BUSINESS_UNIT' }));
       } else if (purpose === 'CHIT_SAVINGS') {
-         // WE PAY THE CHIT INSTALLMENT
          pool = investments.filter(inv => inv.type === 'CHIT_SAVINGS').map(inv => ({ ...inv, partyType: 'INVESTMENT' }));
       } else if (purpose === 'SAVINGS') {
-         // Paying Premiums, Buying Gold, FD
          pool = investments.filter(inv => inv.type !== 'CHIT_SAVINGS').map(inv => ({ ...inv, partyType: 'INVESTMENT' }));
       }
+
+      const isCustomerPurpose = ['GENERAL', 'CHIT_FUND', 'ROYALTY', 'INTEREST', 'OVERALL'].includes(purpose);
       
       return pool
         .filter(p => p.name.toLowerCase().includes(search))
         .map(p => {
              const pType = p.partyType || (
                purpose === 'EXPENSE' ? 'EXPENSE_CAT' :
-               purpose === 'GENERAL' ? 'CUSTOMER' :
+               isCustomerPurpose ? 'CUSTOMER' :
                'LIABILITY'
              );
+
+             // Compute per-category breakdown for customer entries in OUT direction
+             let breakdown = undefined;
+             if (pType === 'CUSTOMER') {
+               const custInvoices = invoices.filter(i => i.customerId === p.id && !i.isVoid);
+               const custPaymentsIn  = payments.filter(pay => pay.sourceId === p.id && pay.type === 'IN');
+               const custPaymentsOut = payments.filter(pay => pay.sourceId === p.id && pay.type === 'OUT');
+               const chitInvoices = custInvoices.filter(i => i.type === 'CHIT');
+               const chitNet =
+                  chitInvoices.filter(i => i.direction !== 'OUT').reduce((sum, i) => sum + i.amount, 0)
+                  - chitInvoices.filter(i => i.direction === 'OUT').reduce((sum, i) => sum + i.amount, 0)
+                  - custPaymentsIn.filter(pay => pay.category === 'CHIT' || pay.category === 'CHIT_FUND').reduce((sum, pay) => sum + pay.amount, 0)
+                  + custPaymentsOut.filter(pay => pay.category === 'CHIT' || pay.category === 'CHIT_FUND').reduce((sum, pay) => sum + pay.amount, 0);
+               breakdown = {
+                  royalty: custInvoices.filter(i => i.type === 'ROYALTY').reduce((sum, i) => sum + i.amount, 0)
+                             - custPaymentsIn.filter(pay => pay.category === 'ROYALTY').reduce((sum, pay) => sum + pay.amount, 0)
+                             + custPaymentsOut.filter(pay => pay.category === 'ROYALTY').reduce((sum, pay) => sum + pay.amount, 0),
+                  interest: custInvoices.filter(i => i.type === 'INTEREST').reduce((sum, i) => sum + i.amount, 0)
+                              - custPaymentsIn.filter(pay => pay.category === 'INTEREST').reduce((sum, pay) => sum + pay.amount, 0)
+                              + custPaymentsOut.filter(pay => pay.category === 'INTEREST').reduce((sum, pay) => sum + pay.amount, 0),
+                  chit: chitNet,
+                  principal: p.interestPrincipal || 0,
+                  opening: Math.max(0, p.openingBalance || 0)
+               };
+             }
+
              return {
                  ...p,
                  partyType: pType,
-                 currentBalance: getPartyBalance(p, pType, purpose)
+                 currentBalance: getPartyBalance(p, pType, purpose),
+                 breakdown
              };
         });
     }
-  }, [accountSearch, direction, purpose, customers, expenseCategories, liabilities, otherBusinesses, invoices, investments, incomeCategories]);
+  }, [accountSearch, direction, purpose, customers, expenseCategories, liabilities, otherBusinesses, invoices, investments, incomeCategories, payments]);
 
   // REVERSAL LOGIC
   const reverseSideEffects = (payment: Payment) => {
-    // 0. Restore invoice balances (ROYALTY / INTEREST / CHIT / GENERAL receipts)
-    if (['ROYALTY', 'INTEREST', 'CHIT', 'GENERAL'].includes(payment.category) && payment.type === 'IN' && payment.sourceId) {
+    // 0. Restore invoice balances (ROYALTY / INTEREST / CHIT / CHIT_FUND / GENERAL receipts)
+    if (['ROYALTY', 'INTEREST', 'CHIT', 'CHIT_FUND', 'GENERAL'].includes(payment.category) && payment.type === 'IN' && payment.sourceId) {
       const typeMap: Record<string, string[]> = {
         'ROYALTY': ['ROYALTY'],
         'INTEREST': ['INTEREST'],
         'CHIT': ['CHIT'],
+        'CHIT_FUND': ['CHIT'],
         'GENERAL': ['ROYALTY', 'INTEREST', 'CHIT'],
       };
       const matchTypes = typeMap[payment.category] || [];
@@ -262,7 +412,7 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
        setLiabilities(prev => prev.map(l => l.id === payment.sourceId ? { ...l, principal: l.principal + payment.amount } : l));
     }
     // 3. Reverse Chit Savings (Remove Transaction from Investment)
-    if (payment.category === 'CHIT_SAVINGS' && setInvestments) {
+    if ((payment.category === 'CHIT_SAVINGS' || payment.category === 'INVESTMENT_CHIT_SAVINGS') && setInvestments) {
         if (payment.type === 'OUT') {
             setInvestments(prev => prev.map(inv => {
                 if (inv.id !== payment.sourceId) return inv;
@@ -337,7 +487,42 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
     try {
       reverseSideEffects(paymentToDelete);
       await paymentAPI.delete(id);
-      setPayments(prev => prev.filter(p => p.id !== id));
+
+      // Persist CHIT_SAVINGS investment ledger removal to backend
+      if ((paymentToDelete.category === 'CHIT_SAVINGS' || paymentToDelete.category === 'INVESTMENT_CHIT_SAVINGS') && paymentToDelete.sourceId && setInvestments) {
+        // Fetch FRESH from Firestore — avoids stale closure
+        const freshInvAll = await investmentAPI.getAll();
+        const targetInv = freshInvAll.find((i: any) => i.id === paymentToDelete.sourceId);
+        if (targetInv) {
+          let updatedInv = targetInv;
+          if (paymentToDelete.type === 'OUT') {
+            // Match by paymentId first (most reliable), then fall back to amount+date
+            const updatedTxns = (targetInv.transactions || []).filter(
+              (t: any) => {
+                if (t.paymentId) return t.paymentId !== id;
+                // fallback for older transactions without paymentId
+                return !(t.amountPaid === paymentToDelete.amount && t.date === paymentToDelete.date);
+              }
+            );
+            updatedInv = { ...targetInv, transactions: updatedTxns };
+          } else if (paymentToDelete.type === 'IN') {
+            // Prize money reversal — clear chitConfig.isPrized
+            const cfg = targetInv.chitConfig || {};
+            // Match by paymentId if stored, otherwise just clear if amounts match
+            const shouldClear = !cfg.paymentId || cfg.paymentId === id;
+            if (shouldClear) {
+              updatedInv = { ...targetInv, chitConfig: { ...cfg, isPrized: false, prizeAmount: 0, prizeMonth: 0, paymentId: null } };
+            }
+          }
+          await investmentAPI.update(targetInv.id, updatedInv);
+          const refreshed = await investmentAPI.getAll();
+          setInvestments(refreshed);
+        }
+      }
+
+      // Reload payments from server to confirm deletion persisted
+      const fresh = await paymentAPI.getAll();
+      setPayments(fresh);
     } catch (error) {
       console.error('Failed to delete payment:', error);
       alert('Failed to delete payment. Please try again.');
@@ -400,39 +585,17 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
     
     // 2. Loan Repayment -> Reduce Debt Liability
     if (purpose === 'LOAN_REPAYMENT') {
-       setLiabilities(prev => prev.map(l => l.id === newPayment.sourceId ? { ...l, principal: Math.max(0, l.principal - newPayment.amount) } : l));
+       const targetLiability = liabilities.find(l => l.id === newPayment.sourceId);
+       if (targetLiability) {
+         const newPrincipal = Math.max(0, targetLiability.principal - newPayment.amount);
+         setLiabilities(prev => prev.map(l => l.id === newPayment.sourceId ? { ...l, principal: newPrincipal } : l));
+         // Persist to backend
+         liabilityAPI.update(newPayment.sourceId, { principal: newPrincipal, updatedAt: Date.now() })
+           .catch(e => console.error('Liability principal update failed:', e));
+       }
     }
 
-    // 3. Chit Savings -> Update Investment Ledger
-    if (purpose === 'CHIT_SAVINGS' && setInvestments) {
-        // PAYMENT (OUT): Paying an installment
-        if (direction === 'OUT') {
-            const currentInv = investments.find(i => i.id === newPayment.sourceId);
-            const monthNum = (currentInv?.transactions?.length || 0) + 1;
-            
-            const transaction: InvestmentTransaction = {
-                id: Math.random().toString(36).substr(2, 9),
-                date: newPayment.date,
-                month: monthNum,
-                amountPaid: newPayment.amount,
-                dividend: 0, 
-                totalPayable: newPayment.amount 
-            };
-            setInvestments(prev => prev.map(inv => inv.id === newPayment.sourceId ? { ...inv, transactions: [...(inv.transactions || []), transaction] } : inv));
-        }
-        // RECEIPT (IN): Winning Prize Money
-        else if (direction === 'IN') {
-            setInvestments(prev => prev.map(inv => inv.id === newPayment.sourceId ? {
-                ...inv,
-                chitConfig: {
-                    ...inv.chitConfig!,
-                    isPrized: true,
-                    prizeAmount: newPayment.amount,
-                    prizeMonth: (inv.transactions?.length || 0) + 1
-                }
-            } : inv));
-        }
-    }
+    // 3. Chit Savings -> will be persisted in try block below (avoids duplicate transactions)
 
     // 4. Regular Savings (LIC, SIP, Gold, FD) -> Update Investment Ledger
     if (purpose === 'SAVINGS' && setInvestments && direction === 'OUT') {
@@ -458,13 +621,14 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
         }
     }
 
-    // --- ALLOCATE PAYMENT AGAINST INVOICE BALANCES (ROYALTY / INTEREST / CHIT / GENERAL) ---
+    // --- ALLOCATE PAYMENT AGAINST INVOICE BALANCES (ROYALTY / INTEREST / CHIT / CHIT_FUND / GENERAL) ---
     // This is the core ledger logic: a receipt reduces the matching unpaid invoices (FIFO - oldest first)
-    if (['ROYALTY', 'INTEREST', 'CHIT', 'GENERAL'].includes(purpose) && direction === 'IN' && newPayment.sourceId) {
+    if (['ROYALTY', 'INTEREST', 'CHIT', 'CHIT_FUND', 'GENERAL'].includes(purpose) && direction === 'IN' && newPayment.sourceId) {
       const typeMap: Record<string, string[]> = {
         'ROYALTY': ['ROYALTY'],
         'INTEREST': ['INTEREST'],
         'CHIT': ['CHIT'],
+        'CHIT_FUND': ['CHIT'],
         'GENERAL': ['ROYALTY', 'INTEREST', 'CHIT'],
       };
       const matchTypes = typeMap[purpose] || [];
@@ -530,17 +694,8 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
         ));
       }
     } else {
-      // Regular Receipt/Payment: Update the selected mode balance
-      const paymentMode = newPayment.mode;
-      const amountChange = direction === 'IN' ? newPayment.amount : -newPayment.amount;
-      
-      if (paymentMode === 'CASH') {
-        setOpeningBalances(prev => ({ ...prev, CASH: prev.CASH + amountChange }));
-      } else {
-        setBankAccounts(prev => prev.map(b => 
-          b.name === paymentMode ? { ...b, openingBalance: b.openingBalance + amountChange } : b
-        ));
-      }
+      // Regular Receipt/Payment: wallet balance is computed dynamically via stats in App.tsx
+      // No need to update opening balances here - avoids double-counting
     }
 
     try {
@@ -549,16 +704,48 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
       console.log('Editing ID:', editingId);
       console.log('Payment data:', JSON.stringify(newPayment, null, 2));
       
+      let response: any;
       if (editingId) {
-        const response = await paymentAPI.update(editingId, newPayment);
+        response = await paymentAPI.update(editingId, newPayment);
         console.log('Update API response:', response);
         setPayments(prev => prev.map(p => p.id === editingId ? newPayment : p));
       } else {
-        const response = await paymentAPI.create(newPayment);
+        // Strip local temp id before sending — backend assigns the real Firestore ID
+        const { id: _localId, ...paymentToSend } = newPayment;
+        response = await paymentAPI.create(paymentToSend);
         console.log('Create API response:', response);
-        // IMPORTANT: use the server-assigned Firestore ID so deletes work later
+        // Use the server-assigned Firestore ID; fallback to local only if somehow missing
         const savedPayment: Payment = { ...newPayment, id: response.id || newPayment.id };
         setPayments(prev => [savedPayment, ...prev]);
+      }
+
+      // Persist CHIT_SAVINGS investment ledger changes to backend
+      if (purpose === 'CHIT_SAVINGS' && setInvestments && newPayment.sourceId) {
+        // Always fetch fresh from Firestore to avoid stale closure state
+        const freshInvAll = await investmentAPI.getAll();
+        const targetInv = freshInvAll.find((i: any) => i.id === newPayment.sourceId);
+        if (targetInv) {
+          let updatedInv = targetInv;
+          const savedId = response?.id || newPayment.id; // reliable payment ID from server
+          if (direction === 'OUT') {
+            const monthNum = (targetInv.transactions?.length || 0) + 1;
+            const newTxn: InvestmentTransaction = {
+              id: Math.random().toString(36).substr(2, 9),
+              paymentId: savedId, // key for reliable delete
+              date: newPayment.date,
+              month: monthNum,
+              amountPaid: newPayment.amount,
+              dividend: 0,
+              totalPayable: newPayment.amount
+            };
+            updatedInv = { ...targetInv, transactions: [...(targetInv.transactions || []), newTxn] };
+          } else if (direction === 'IN') {
+            updatedInv = { ...targetInv, chitConfig: { ...targetInv.chitConfig, isPrized: true, prizeAmount: newPayment.amount, prizeMonth: (targetInv.transactions?.length || 0) + 1, paymentId: savedId } };
+          }
+          await investmentAPI.update(targetInv.id, updatedInv);
+          const refreshed = await investmentAPI.getAll();
+          setInvestments(refreshed);
+        }
       }
       
       // Reset Form
@@ -614,26 +801,37 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
               <div className="grid grid-cols-2 gap-2">
                  {direction === 'IN' ? (
                    <>
-                     <button onClick={() => { setPurpose('GENERAL'); setAccountSearch(''); }} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'GENERAL' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 text-slate-500 bg-white'}`}>General / Party</button>
-                     <button onClick={() => { setPurpose('DIRECT_INCOME'); setAccountSearch(''); }} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'DIRECT_INCOME' ? 'border-emerald-600 bg-emerald-600 text-white' : 'border-slate-200 text-slate-500 bg-white'}`}>Direct Income</button>
-                     <button onClick={() => { setPurpose('OTHER_BUSINESS'); setAccountSearch(''); }} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'OTHER_BUSINESS' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 text-slate-500 bg-white'}`}>Business Unit</button>
-                     <button onClick={() => { setPurpose('ROYALTY'); setAccountSearch(''); }} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'ROYALTY' ? 'border-purple-500 bg-purple-50 text-purple-700' : 'border-slate-200 text-slate-500 bg-white'}`}>Royalty Income</button>
-                     <button onClick={() => { setPurpose('INTEREST'); setAccountSearch(''); }} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'INTEREST' ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-200 text-slate-500 bg-white'}`}>Interest Rec.</button>
-                     <button onClick={() => { setPurpose('PRINCIPAL_RECOVERY'); setAccountSearch(''); }} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'PRINCIPAL_RECOVERY' ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-200 text-slate-500 bg-white'}`}>Principal Rec.</button>
-                     <button onClick={() => { setPurpose('SAVINGS'); setAccountSearch(''); }} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'SAVINGS' ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-200 text-slate-500 bg-white'}`}>Savings & Assets</button>
-                     <button onClick={() => { setPurpose('CHIT_SAVINGS'); setAccountSearch(''); }} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'CHIT_SAVINGS' ? 'border-orange-600 bg-orange-600 text-white' : 'border-slate-200 text-slate-500 bg-white'}`}>Chit Prize (Won)</button>
-                     <button onClick={() => { setDirection('IN'); setPurpose('TRANSFER'); setAccountSearch(''); }} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'TRANSFER' ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-slate-200 text-slate-500 bg-white'}`}>Contra / Transfer</button>
+                     {/* OVERALL: summary view showing all category outstandings — always first */}
+                     <button onClick={() => changePurpose('OVERALL')} className={`col-span-2 px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'OVERALL' ? 'border-indigo-600 bg-indigo-600 text-white' : 'border-indigo-200 text-indigo-600 bg-indigo-50 hover:bg-indigo-100'}`}>
+                       ⊞ Overall Outstanding
+                     </button>
+                     {/* Primary collection categories */}
+                     <button onClick={() => changePurpose('ROYALTY')} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'ROYALTY' ? 'border-purple-500 bg-purple-50 text-purple-700' : 'border-slate-200 text-slate-500 bg-white'}`}>Royalty Income</button>
+                     <button onClick={() => changePurpose('INTEREST')} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'INTEREST' ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-200 text-slate-500 bg-white'}`}>Interest Rec.</button>
+                     <button onClick={() => changePurpose('CHIT_FUND')} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'CHIT_FUND' ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-200 text-slate-500 bg-white'}`}>Chit Fund</button>
+                     <button onClick={() => changePurpose('SAVINGS')} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'SAVINGS' ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-200 text-slate-500 bg-white'}`}>Savings & Assets</button>
+                     {/* Other categories */}
+                     <button onClick={() => changePurpose('GENERAL')} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'GENERAL' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 text-slate-500 bg-white'}`}>General / Party</button>
+                     <button onClick={() => changePurpose('DIRECT_INCOME')} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'DIRECT_INCOME' ? 'border-emerald-600 bg-emerald-600 text-white' : 'border-slate-200 text-slate-500 bg-white'}`}>Direct Income</button>
+                     <button onClick={() => changePurpose('OTHER_BUSINESS')} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'OTHER_BUSINESS' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 text-slate-500 bg-white'}`}>Business Unit</button>
+                     <button onClick={() => changePurpose('PRINCIPAL_RECOVERY')} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'PRINCIPAL_RECOVERY' ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-200 text-slate-500 bg-white'}`}>Principal Rec.</button>
+                     <button onClick={() => { setDirection('IN'); changePurpose('TRANSFER'); }} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'TRANSFER' ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-slate-200 text-slate-500 bg-white'}`}>Contra / Transfer</button>
                    </>
                  ) : (
                    <>
-                     <button onClick={() => { setPurpose('GENERAL'); setAccountSearch(''); }} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'GENERAL' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 text-slate-500 bg-white'}`}>General / Party</button>
-                     <button onClick={() => { setPurpose('EXPENSE'); setAccountSearch(''); }} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'EXPENSE' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 text-slate-500 bg-white'}`}>Op. Expense</button>
-                     <button onClick={() => { setPurpose('OTHER_BUSINESS'); setAccountSearch(''); }} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'OTHER_BUSINESS' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 text-slate-500 bg-white'}`}>Business Unit</button>
-                     <button onClick={() => { setPurpose('LOAN_INTEREST'); setAccountSearch(''); }} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'LOAN_INTEREST' ? 'border-rose-500 bg-rose-50 text-rose-700' : 'border-slate-200 text-slate-500 bg-white'}`}>Debt Interest</button>
-                     <button onClick={() => { setPurpose('LOAN_REPAYMENT'); setAccountSearch(''); }} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'LOAN_REPAYMENT' ? 'border-rose-500 bg-rose-50 text-rose-700' : 'border-slate-200 text-slate-500 bg-white'}`}>Debt Repayment</button>
-                     <button onClick={() => { setPurpose('SAVINGS'); setAccountSearch(''); }} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'SAVINGS' ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-200 text-slate-500 bg-white'}`}>Savings & Assets</button>
-                     <button onClick={() => { setPurpose('CHIT_SAVINGS'); setAccountSearch(''); }} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'CHIT_SAVINGS' ? 'border-orange-600 bg-orange-600 text-white' : 'border-slate-200 text-slate-500 bg-white'}`}>Chit Installment</button>
-                     <button onClick={() => { setDirection('IN'); setPurpose('TRANSFER'); setAccountSearch(''); }} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'TRANSFER' ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-slate-200 text-slate-500 bg-white'}`}>Contra / Transfer</button>
+                     {/* OVERALL: summary view for OUT direction too */}
+                     <button onClick={() => changePurpose('OVERALL')} className={`col-span-2 px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'OVERALL' ? 'border-indigo-600 bg-indigo-600 text-white' : 'border-indigo-200 text-indigo-600 bg-indigo-50 hover:bg-indigo-100'}`}>
+                       ⊞ Overall Outstanding
+                     </button>
+                     <button onClick={() => changePurpose('CHIT_SAVINGS')} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'CHIT_SAVINGS' ? 'border-orange-600 bg-orange-600 text-white' : 'border-slate-200 text-slate-500 bg-white'}`}>Chit Prize (Won)</button>
+                     <button onClick={() => changePurpose('GENERAL')} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'GENERAL' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 text-slate-500 bg-white'}`}>General / Party</button>
+                     <button onClick={() => changePurpose('EXPENSE')} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'EXPENSE' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 text-slate-500 bg-white'}`}>Op. Expense</button>
+                     <button onClick={() => changePurpose('OTHER_BUSINESS')} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'OTHER_BUSINESS' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 text-slate-500 bg-white'}`}>Business Unit</button>
+                     <button onClick={() => changePurpose('LOAN_INTEREST')} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'LOAN_INTEREST' ? 'border-rose-500 bg-rose-50 text-rose-700' : 'border-slate-200 text-slate-500 bg-white'}`}>Debt Interest</button>
+                     <button onClick={() => changePurpose('LOAN_REPAYMENT')} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'LOAN_REPAYMENT' ? 'border-rose-500 bg-rose-50 text-rose-700' : 'border-slate-200 text-slate-500 bg-white'}`}>Debt Repayment</button>
+                     <button onClick={() => changePurpose('SAVINGS')} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'SAVINGS' ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-200 text-slate-500 bg-white'}`}>Savings & Assets</button>
+                     <button onClick={() => changePurpose('CHIT_FUND')} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'CHIT_FUND' ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-200 text-slate-500 bg-white'}`}>Chit Fund</button>
+                     <button onClick={() => { setDirection('IN'); changePurpose('TRANSFER'); }} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase border-2 transition ${purpose === 'TRANSFER' ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-slate-200 text-slate-500 bg-white'}`}>Contra / Transfer</button>
                    </>
                  )}
               </div>
@@ -669,98 +867,220 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
                       className="w-full pl-10 pr-4 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl text-sm font-bold outline-none focus:border-indigo-500 uppercase"
                       placeholder="SEARCH..." 
                       value={accountSearch}
-                      onChange={e => { setAccountSearch(e.target.value); setShowResults(true); }}
-                      onFocus={() => setShowResults(true)}
+                      onChange={e => {
+                        setAccountSearch(e.target.value);
+                        setShowResults(true);
+                        // Clear the selected party as soon as the user types a new search
+                        // so the balance panel doesn't block the dropdown results
+                        if (selectedParty) setSelectedParty(null);
+                      }}
+                      onFocus={() => {
+                        setShowResults(true);
+                        // Always auto-switch to OVERALL when the search box is empty (fresh search)
+                        // so all parties sorted by outstanding are immediately visible.
+                        // If the user has already typed something (e.g. searching expenses), keep current purpose.
+                        if (!accountSearch) setPurpose('OVERALL');
+                      }}
                     />
                  </div>
                  
-                 {/* Selected Balance Display */}
-                 {selectedParty && (selectedParty.currentBalance > 0 || (selectedParty.breakdown && Object.values(selectedParty.breakdown).some((v: any) => v > 0))) && (
-                    <div className="mt-4 bg-slate-50 p-5 rounded-2xl border border-slate-100 animate-fadeIn shadow-sm">
-                       <div className="flex justify-between items-center mb-3 pb-3 border-b border-slate-200">
+                 {/* Selected Balance Display — always shown when a party is selected */}
+                 {selectedParty && (['CUSTOMER', 'LIABILITY', 'INVESTMENT'].includes(selectedParty.partyType)) && (() => {
+                    // signed = true gives actual net (can be negative = Cr/Payable)
+                    const signedBalance = getPartyBalance(selectedParty, selectedParty.partyType || 'CUSTOMER', purpose, true);
+                    const bd = selectedParty.breakdown;
+                    const isCr = signedBalance < 0;   // company owes the party
+                    const isDr = signedBalance > 0;   // party owes the company
+                    const absBalance = Math.abs(signedBalance);
+                    const purposeLabel: Record<string, string> = {
+                      CHIT_FUND: 'Chit Balance',
+                      ROYALTY:   'Royalty Balance',
+                      INTEREST:  'Interest Balance',
+                      SAVINGS:   'Total Invested',
+                    };
+                    return (
+                    <div className={`mt-4 p-5 rounded-2xl border animate-fadeIn shadow-sm ${purpose === 'OVERALL' ? 'bg-indigo-50 border-indigo-200' : isCr ? 'bg-amber-50 border-amber-200' : isDr ? 'bg-slate-50 border-slate-100' : 'bg-emerald-50 border-emerald-100'}`}>
+                       <div className="flex justify-between items-center mb-2 pb-2 border-b border-slate-200">
                           <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                             {purpose === 'SAVINGS' ? 'Total Invested' : 'Total Outstanding'}
+                             {purpose === 'OVERALL' ? 'Overall Outstanding' : (purposeLabel[purpose] || 'Account Balance')}
                           </span>
-                          <span className={`text-sm font-black ${purpose === 'SAVINGS' ? 'text-emerald-600' : 'text-rose-600'}`}>
-                             ₹{selectedParty.currentBalance.toLocaleString()}
-                          </span>
+                          <div className="flex items-center gap-2">
+                             {purpose !== 'OVERALL' && isCr && (
+                                <span className="text-[9px] font-black bg-amber-200 text-amber-800 px-1.5 py-0.5 rounded uppercase tracking-wide">You Owe Them</span>
+                             )}
+                             {purpose !== 'OVERALL' && isDr && (
+                                <span className="text-[9px] font-black bg-rose-100 text-rose-700 px-1.5 py-0.5 rounded uppercase tracking-wide">They Owe You</span>
+                             )}
+                             <span className={`text-sm font-black ${purpose === 'OVERALL' ? 'text-indigo-700' : isCr ? 'text-amber-700' : isDr ? 'text-rose-600' : 'text-emerald-600'}`}>
+                                {signedBalance === 0 ? '✓ Nil' : `₹${absBalance.toLocaleString()}`}
+                             </span>
+                          </div>
                        </div>
-                       
-                       {selectedParty.breakdown && (
-                          <div className="space-y-2">
-                             {selectedParty.breakdown.royalty > 0 && (
+
+                       {/* OVERALL MODE: always show category-wise breakdown */}
+                       {purpose === 'OVERALL' && bd && (() => {
+                          const cats = [
+                            { key: 'chit',      label: 'Chit Fund',      dot: 'bg-orange-500', labelCls: 'text-orange-700', rowBg: 'bg-orange-50 border-orange-100' },
+                            { key: 'royalty',   label: 'Royalty',        dot: 'bg-purple-500', labelCls: 'text-purple-700', rowBg: 'bg-purple-50 border-purple-100' },
+                            { key: 'interest',  label: 'Interest',       dot: 'bg-emerald-500',labelCls: 'text-emerald-700',rowBg: 'bg-emerald-50 border-emerald-100' },
+                            { key: 'principal', label: 'Principal Lent', dot: 'bg-blue-500',   labelCls: 'text-blue-700',   rowBg: 'bg-blue-50 border-blue-100' },
+                            { key: 'opening',   label: 'General / Old',  dot: 'bg-slate-400',  labelCls: 'text-slate-600',  rowBg: 'bg-slate-50 border-slate-100' },
+                          ];
+                          const hasAny = cats.some(c => (bd[c.key] || 0) !== 0);
+                          return (
+                            <div className="space-y-1.5 mt-1">
+                              <p className="text-[9px] text-indigo-500 font-bold uppercase tracking-widest mb-2">
+                                Select a category below to post a voucher
+                              </p>
+                              {cats.map(c => {
+                                const val = bd[c.key] || 0;
+                                if (!hasAny || true) { // show all rows so user sees Nil too
+                                  return (
+                                    <div key={c.key} className={`flex justify-between items-center px-3 py-2 rounded-xl border ${c.rowBg}`}>
+                                      <div className="flex items-center gap-2">
+                                        <div className={`h-2 w-2 rounded-full ${c.dot}`}></div>
+                                        <span className={`text-[10px] font-black uppercase tracking-wide ${c.labelCls}`}>{c.label}</span>
+                                      </div>
+                                      <span className={`text-[10px] font-black ${val === 0 ? 'text-slate-400' : val > 0 ? 'text-rose-600' : 'text-amber-600'}`}>
+                                        {val === 0 ? '— Nil' : val > 0 ? `₹${val.toLocaleString()} Dr` : `₹${Math.abs(val).toLocaleString()} Cr`}
+                                      </span>
+                                    </div>
+                                  );
+                                }
+                                return null;
+                              })}
+                            </div>
+                          );
+                       })()}
+
+                       {/* SPECIFIC CATEGORY: just show the balance with a note if Cr */}
+                       {purpose !== 'OVERALL' && isCr && (
+                          <p className="text-[10px] text-amber-700 font-semibold">
+                             You owe this party ₹{absBalance.toLocaleString()} — use OUT (Payment) to settle it
+                          </p>
+                       )}
+                       {/* GENERAL: full breakdown lines */}
+                       {bd && isDr && purpose === 'GENERAL' && (
+                          <div className="space-y-1.5 mt-2">
+                             {bd.royalty > 0 && (
                                 <div className="flex justify-between items-center">
                                    <div className="flex items-center gap-2">
                                       <div className="h-1.5 w-1.5 rounded-full bg-purple-500"></div>
                                       <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">Royalty</span>
                                    </div>
-                                   <span className="text-[10px] font-black text-slate-800">₹{selectedParty.breakdown.royalty.toLocaleString()}</span>
+                                   <span className="text-[10px] font-black text-slate-800">₹{bd.royalty.toLocaleString()}</span>
                                 </div>
                              )}
-                             {selectedParty.breakdown.interest > 0 && (
+                             {bd.interest > 0 && (
                                 <div className="flex justify-between items-center">
                                    <div className="flex items-center gap-2">
                                       <div className="h-1.5 w-1.5 rounded-full bg-emerald-500"></div>
                                       <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">Interest Due</span>
                                    </div>
-                                   <span className="text-[10px] font-black text-slate-800">₹{selectedParty.breakdown.interest.toLocaleString()}</span>
+                                   <span className="text-[10px] font-black text-slate-800">₹{bd.interest.toLocaleString()}</span>
                                 </div>
                              )}
-                             {selectedParty.breakdown.chit > 0 && (
+                             {bd.chit > 0 && (
                                 <div className="flex justify-between items-center">
                                    <div className="flex items-center gap-2">
                                       <div className="h-1.5 w-1.5 rounded-full bg-orange-500"></div>
                                       <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">Chit Due</span>
                                    </div>
-                                   <span className="text-[10px] font-black text-slate-800">₹{selectedParty.breakdown.chit.toLocaleString()}</span>
+                                   <span className="text-[10px] font-black text-slate-800">₹{bd.chit.toLocaleString()}</span>
                                 </div>
                              )}
-                             {selectedParty.breakdown.principal > 0 && (
+                             {bd.principal > 0 && (
                                 <div className="flex justify-between items-center">
                                    <div className="flex items-center gap-2">
                                       <div className="h-1.5 w-1.5 rounded-full bg-blue-500"></div>
                                       <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">Principal Lent</span>
                                    </div>
-                                   <span className="text-[10px] font-black text-slate-800">₹{selectedParty.breakdown.principal.toLocaleString()}</span>
+                                   <span className="text-[10px] font-black text-slate-800">₹{bd.principal.toLocaleString()}</span>
                                 </div>
                              )}
-                             {selectedParty.breakdown.opening > 0 && (
+                             {bd.opening > 0 && (
                                 <div className="flex justify-between items-center">
                                    <div className="flex items-center gap-2">
                                       <div className="h-1.5 w-1.5 rounded-full bg-slate-400"></div>
                                       <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">General / Old</span>
                                    </div>
-                                   <span className="text-[10px] font-black text-slate-800">₹{selectedParty.breakdown.opening.toLocaleString()}</span>
+                                   <span className="text-[10px] font-black text-slate-800">₹{bd.opening.toLocaleString()}</span>
                                 </div>
                              )}
                           </div>
                        )}
                     </div>
-                 )}
+                    );
+                 })()}
 
-                 {showResults && accountSearch && (
-                    <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-2xl shadow-xl border border-slate-100 max-h-60 overflow-y-auto z-20">
-                       {availableParties.map((p: any) => (
+                 {/* Smart Search Dropdown — shows on focus even without typing, sorted by outstanding */}
+                 {showResults && (() => {
+                    const isSearching = accountSearch.trim().length > 0;
+                    // Sort by signed outstanding descending (highest Dr first, Cr last) when not searching
+                    const sorted = isSearching
+                      ? availableParties
+                      : [...availableParties].sort((a, b) => {
+                          const bA = a.partyType === 'CUSTOMER' ? getPartyBalance(a, 'CUSTOMER', purpose, true) : (a.currentBalance || 0);
+                          const bB = b.partyType === 'CUSTOMER' ? getPartyBalance(b, 'CUSTOMER', purpose, true) : (b.currentBalance || 0);
+                          // IN Receipt: highest "They Owe You" (Dr / positive) first
+                          // OUT Payment: highest "You Owe Them" (Cr / most negative) first
+                          return direction === 'OUT' ? bA - bB : bB - bA;
+                        });
+                    if (sorted.length === 0 && !isSearching) return null;
+                    return (
+                    <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-2xl shadow-xl border border-slate-100 max-h-72 overflow-y-auto z-20">
+                       {/* Header */}
+                       <div className="px-4 py-2.5 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-2xl sticky top-0">
+                          <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">
+                             {isSearching ? `${sorted.length} result${sorted.length !== 1 ? 's' : ''} for "${accountSearch}"` : `All · Sorted by Outstanding`}
+                          </span>
+                          {!isSearching && sorted.length > 0 && (
+                            <span className="text-[9px] font-bold text-slate-400">{sorted.length} parties</span>
+                          )}
+                       </div>
+                       {sorted.map((p: any) => {
+                          const isCust = p.partyType === 'CUSTOMER';
+                          const signedBal = isCust
+                            ? getPartyBalance(p, 'CUSTOMER', purpose, true)
+                            : p.currentBalance;
+                          const absBal = Math.abs(signedBal);
+                          const isCr = isCust && signedBal < 0;
+                          const isDr = signedBal > 0;
+                          const isNil = signedBal === 0;
+                          return (
                           <div 
                              key={p.id} 
                              onClick={() => selectParty(p)} 
-                             className="p-4 hover:bg-slate-50 cursor-pointer border-b border-slate-50 last:border-0 flex justify-between items-center group"
+                             className="px-4 py-3 hover:bg-indigo-50 cursor-pointer border-b border-slate-50 last:border-0 flex justify-between items-center group transition-colors"
                           >
-                             <div>
-                                <div className="text-xs font-black text-slate-800 uppercase group-hover:text-indigo-600 transition-colors">{p.name}</div>
-                                <div className="text-[9px] font-bold text-slate-400">{p.partyType?.replace('_', ' ')} {p.type ? `- ${p.type.replace('_', ' ')}` : ''}</div>
-                             </div>
-                             {p.currentBalance > 0 && (
-                                <div className="text-right">
-                                   <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest">{purpose === 'SAVINGS' ? 'Current Value' : 'Due'}</div>
-                                   <div className={`text-xs font-bold ${purpose === 'SAVINGS' ? 'text-emerald-600' : 'text-rose-500'}`}>₹{p.currentBalance.toLocaleString()}</div>
+                             <div className="flex items-center gap-3 min-w-0">
+                                {/* Color dot: rose=owes us, amber=we owe, slate=nil */}
+                                <div className={`h-2 w-2 rounded-full shrink-0 ${isDr ? 'bg-rose-400' : isCr ? 'bg-amber-400' : 'bg-slate-300'}`}></div>
+                                <div className="min-w-0">
+                                   <div className="text-xs font-black text-slate-800 uppercase group-hover:text-indigo-600 transition-colors truncate">{p.name}</div>
+                                   <div className="text-[9px] font-bold text-slate-400">{p.partyType?.replace(/_/g, ' ')} {p.type ? `· ${p.type.replace(/_/g, ' ')}` : ''}</div>
                                 </div>
-                             )}
+                             </div>
+                             <div className="text-right shrink-0 ml-4">
+                                <div className="flex items-center gap-1 justify-end">
+                                   {isCr && <span className="text-[8px] font-black bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full">You Owe</span>}
+                                   {isDr && <span className="text-[8px] font-black bg-rose-100 text-rose-600 px-1.5 py-0.5 rounded-full">Owes You</span>}
+                                   <span className={`text-xs font-black ${isCr ? 'text-amber-700' : isDr ? 'text-rose-600' : 'text-slate-400'}`}>
+                                      {isNil ? '—' : `₹${absBal.toLocaleString()}`}
+                                   </span>
+                                </div>
+                             </div>
                           </div>
-                       ))}
-                       {availableParties.length === 0 && <div className="p-4 text-xs text-slate-400 italic">No matches found for {purpose} purpose.</div>}
+                          );
+                       })}
+                       {sorted.length === 0 && (
+                         <div className="p-6 text-center">
+                           <div className="text-xs font-black text-slate-300 uppercase tracking-widest">No matches for "{accountSearch}"</div>
+                         </div>
+                       )}
                     </div>
-                 )}
+                    );
+                 })()}
               </div>
 
               {/* Amount & Date */}
@@ -807,10 +1127,39 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
 
            </div>
 
+           {/* Block IN receipt when party already has a Cr (You Owe Them) balance */}
+           {(() => {
+              if (!selectedParty || selectedParty.partyType !== 'CUSTOMER' || direction !== 'IN') return null;
+              const signedBal = getPartyBalance(selectedParty, 'CUSTOMER', purpose, true);
+              if (signedBal >= 0) return null;
+              return (
+                <div className="mt-6 bg-red-50 border-2 border-red-300 rounded-2xl p-4">
+                  <div className="flex items-start gap-3">
+                    <i className="fas fa-exclamation-triangle text-red-500 mt-0.5 text-lg"></i>
+                    <div>
+                      <div className="text-sm font-black text-red-700 uppercase tracking-wide mb-1">Cannot Post IN Receipt</div>
+                      <div className="text-xs text-red-600 font-semibold leading-relaxed">
+                        You already owe this party <span className="font-black">₹{Math.abs(signedBal).toLocaleString()}</span>. Posting another IN receipt will increase what you owe them further.
+                      </div>
+                      <div className="text-xs text-red-500 mt-2 font-bold">
+                        → To fix: Delete duplicate receipts in Recent Vouchers below, or switch to <span className="underline">OUT (Payment)</span> to pay them back.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+           })()}
+
            <div className="mt-8 pt-8 border-t border-slate-100">
-              <button data-testid="btn-save-voucher" disabled={isSubmitting} className="w-full bg-slate-900 text-white py-5 rounded-2xl font-black uppercase tracking-widest hover:bg-slate-800 shadow-xl hover:scale-[1.01] transition text-sm flex justify-center items-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed disabled:scale-100">
-                 {isSubmitting ? <><i className="fas fa-spinner fa-spin"></i> Processing...</> : editingId ? <><i className="fas fa-save"></i> Update Voucher</> : <><i className="fas fa-check-circle"></i> Post Voucher</>}
-              </button>
+              {purpose === 'OVERALL' ? (
+                <div className="w-full bg-indigo-50 border-2 border-indigo-200 text-indigo-600 py-5 rounded-2xl font-black uppercase tracking-widest text-sm flex justify-center items-center gap-2 cursor-not-allowed select-none">
+                  <i className="fas fa-info-circle"></i> Select a Category Above to Post
+                </div>
+              ) : (
+                <button data-testid="btn-save-voucher" disabled={isSubmitting} className="w-full bg-slate-900 text-white py-5 rounded-2xl font-black uppercase tracking-widest hover:bg-slate-800 shadow-xl hover:scale-[1.01] transition text-sm flex justify-center items-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed disabled:scale-100">
+                  {isSubmitting ? <><i className="fas fa-spinner fa-spin"></i> Processing...</> : editingId ? <><i className="fas fa-save"></i> Update Voucher</> : <><i className="fas fa-check-circle"></i> Post Voucher</>}
+                </button>
+              )}
            </div>
         </form>
       </div>
@@ -818,9 +1167,51 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
       {/* RECENT VOUCHERS LIST */}
       <div className="bg-white rounded-[2.5rem] shadow-xl border border-slate-200 overflow-hidden">
          <div className="p-8 border-b border-slate-100 bg-slate-50">
-            <h3 className="text-xl font-display font-black text-slate-900 uppercase italic tracking-tighter">Recent Vouchers</h3>
-            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">History & Corrections</p>
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
+               <div>
+                  <h3 className="text-xl font-display font-black text-slate-900 uppercase italic tracking-tighter">Recent Vouchers</h3>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">History &amp; Corrections</p>
+               </div>
+               <input
+                  value={voucherSearch}
+                  onChange={e => { setVoucherSearch(e.target.value); setVoucherPage(1); }}
+                  placeholder="Search party / head..."
+                  className="border border-slate-200 rounded-xl px-4 py-2 text-xs font-bold text-slate-700 placeholder-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-300 w-52"
+               />
+            </div>
+            <div className="flex flex-wrap gap-2">
+               <div className="flex bg-slate-100 p-1 rounded-xl gap-1">
+                  {(['ALL','IN','OUT'] as const).map(t => (
+                     <button key={t} onClick={() => { setVoucherTypeFilter(t); setVoucherPage(1); }}
+                        className={`px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${
+                           voucherTypeFilter === t
+                              ? t === 'IN' ? 'bg-emerald-500 text-white shadow'
+                              : t === 'OUT' ? 'bg-rose-500 text-white shadow'
+                              : 'bg-slate-900 text-white shadow'
+                              : 'text-slate-400 hover:text-slate-600'
+                        }`}>{t === 'ALL' ? 'All' : t === 'IN' ? '+ IN' : '– OUT'}</button>
+                  ))}
+               </div>
+               <select
+                  value={voucherCatFilter}
+                  onChange={e => { setVoucherCatFilter(e.target.value); setVoucherPage(1); }}
+                  className="border border-slate-200 rounded-xl px-3 py-1.5 text-[9px] font-black uppercase tracking-widest text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-300 bg-white"
+               >
+                  <option value="ALL">All Categories</option>
+                  {Array.from(new Set(payments.map(p => p.category))).sort().map(cat => (
+                     <option key={cat} value={cat}>{cat}</option>
+                  ))}
+               </select>
+            </div>
          </div>
+         {(() => {
+            const filtered = payments
+               .filter(p => voucherTypeFilter === 'ALL' || p.type === voucherTypeFilter)
+               .filter(p => voucherCatFilter === 'ALL' || p.category === voucherCatFilter)
+               .filter(p => !voucherSearch || p.sourceName?.toLowerCase().includes(voucherSearch.toLowerCase()) || p.category?.toLowerCase().includes(voucherSearch.toLowerCase()));
+            const totalPages = Math.max(1, Math.ceil(filtered.length / VOUCHER_PAGE_SIZE));
+            const paginated = filtered.slice((voucherPage - 1) * VOUCHER_PAGE_SIZE, voucherPage * VOUCHER_PAGE_SIZE);
+            return (<>
          <table className="min-w-full divide-y divide-slate-100">
             <thead className="bg-white">
                <tr>
@@ -832,7 +1223,10 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
                </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
-               {payments.slice(0, 15).map(p => (
+               {paginated.length === 0 && (
+                  <tr><td colSpan={5} className="px-8 py-10 text-center text-xs font-bold text-slate-400">No vouchers match the current filters.</td></tr>
+               )}
+               {paginated.map(p => (
                      <tr key={p.id} className="hover:bg-slate-50 transition group">
                         <td className="px-8 py-4 text-xs font-bold text-slate-500">{new Date(p.date).toLocaleDateString()}</td>
                         <td className="px-8 py-4">
@@ -863,6 +1257,32 @@ const AccountsManager: React.FC<AccountsManagerProps> = ({
                   ))}
                </tbody>
             </table>
+            {/* Pagination */}
+            {totalPages > 1 && (
+               <div className="flex items-center justify-between px-8 py-4 border-t border-slate-100 bg-slate-50">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                     Showing {((voucherPage-1)*VOUCHER_PAGE_SIZE)+1}–{Math.min(voucherPage*VOUCHER_PAGE_SIZE, filtered.length)} of {filtered.length}
+                  </span>
+                  <div className="flex gap-2">
+                     <button disabled={voucherPage === 1} onClick={() => setVoucherPage(p => p - 1)}
+                        className="h-8 w-8 rounded-lg bg-white border border-slate-200 text-slate-600 text-xs font-black disabled:opacity-30 hover:bg-slate-100 transition">
+                        <i className="fas fa-chevron-left"></i>
+                     </button>
+                     {Array.from({ length: totalPages }, (_, i) => i + 1).map(pg => (
+                        <button key={pg} onClick={() => setVoucherPage(pg)}
+                           className={`h-8 w-8 rounded-lg text-xs font-black transition ${
+                              pg === voucherPage ? 'bg-slate-900 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+                           }`}>{pg}</button>
+                     ))}
+                     <button disabled={voucherPage === totalPages} onClick={() => setVoucherPage(p => p + 1)}
+                        className="h-8 w-8 rounded-lg bg-white border border-slate-200 text-slate-600 text-xs font-black disabled:opacity-30 hover:bg-slate-100 transition">
+                        <i className="fas fa-chevron-right"></i>
+                     </button>
+                  </div>
+               </div>
+            )}
+            </>);
+         })()}
       </div>
     </div>
   );

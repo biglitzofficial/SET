@@ -22,6 +22,9 @@ const LoanList: React.FC<LoanListProps> = ({ liabilities, setLiabilities, custom
   
   const [liabilityPayAmount, setLiabilityPayAmount] = useState(0);
   const [activeFilter, setActiveFilter] = useState<'ALL' | 'BANK' | 'PRIVATE' | 'LENT'>('ALL');
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 30;
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   
   const initialForm = { 
     providerName: '', 
@@ -149,6 +152,34 @@ const LoanList: React.FC<LoanListProps> = ({ liabilities, setLiabilities, custom
     }
   };
 
+  const handleDelete = async (row: any) => {
+    const label = row.sourceType === 'LIABILITY' ? row.name : `${row.name} (${row.type})`;
+    if (!window.confirm(`Delete "${label}"? This cannot be undone.`)) return;
+    setDeletingId(row.id);
+    try {
+      if (row.sourceType === 'LIABILITY') {
+        await liabilityAPI.delete(row.id);
+        setLiabilities(prev => prev.filter(l => l.id !== row.id));
+      } else {
+        // Customer-based lent/lender row — clear the relevant flags/amounts
+        if (row.isLent) {
+          setCustomers(prev => prev.map(c => c.id === row.id
+            ? { ...c, isInterest: false, interestPrincipal: 0 }
+            : c));
+        } else {
+          setCustomers(prev => prev.map(c => c.id === row.id
+            ? { ...c, isLender: false, creditPrincipal: 0 }
+            : c));
+        }
+      }
+    } catch (err) {
+      console.error('Delete failed:', err);
+      alert('Failed to delete. Please try again.');
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
   // Unified Rows for Display
   const displayRows = useMemo(() => {
     let rows: any[] = [];
@@ -160,6 +191,7 @@ const LoanList: React.FC<LoanListProps> = ({ liabilities, setLiabilities, custom
         type: l.type, // 'BANK' or 'PRIVATE'
         principal: l.principal,
         rate: l.interestRate,
+        date: l.startDate || 0,
         isLent: false,
         sourceType: 'LIABILITY',
         raw: l
@@ -177,6 +209,7 @@ const LoanList: React.FC<LoanListProps> = ({ liabilities, setLiabilities, custom
                  type: 'PRIVATE', // Treat as Private Debt
                  principal: c.creditPrincipal,
                  rate: c.interestRate,
+                 date: c.createdAt || 0,
                  isLent: false,
                  sourceType: 'CUSTOMER',
                  raw: c
@@ -190,6 +223,7 @@ const LoanList: React.FC<LoanListProps> = ({ liabilities, setLiabilities, custom
                  type: 'LENT',
                  principal: c.interestPrincipal,
                  rate: c.interestRate,
+                 date: c.createdAt || 0,
                  isLent: true,
                  sourceType: 'CUSTOMER',
                  raw: c
@@ -243,7 +277,7 @@ const LoanList: React.FC<LoanListProps> = ({ liabilities, setLiabilities, custom
       <div className="bg-white border border-slate-200 rounded-[1.5rem] shadow-lg overflow-hidden">
         <div className="p-2 border-b border-slate-200 bg-white flex gap-2 overflow-x-auto">
            {['ALL', 'BANK', 'PRIVATE', 'LENT'].map(f => (
-             <button key={f} onClick={() => setActiveFilter(f as any)} className={`px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeFilter === f ? 'bg-slate-900 text-white shadow-md' : 'text-slate-400 hover:bg-slate-50 hover:text-slate-600'}`}>{f}</button>
+             <button key={f} onClick={() => { setActiveFilter(f as any); setPage(1); }} className={`px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeFilter === f ? 'bg-slate-900 text-white shadow-md' : 'text-slate-400 hover:bg-slate-50 hover:text-slate-600'}`}>{f}</button>
            ))}
         </div>
         <div className="overflow-x-auto">
@@ -252,13 +286,14 @@ const LoanList: React.FC<LoanListProps> = ({ liabilities, setLiabilities, custom
             <tr>
               <th className="px-6 py-5 text-left text-[10px] font-black uppercase tracking-widest opacity-80">Party / Institution</th>
               <th className="px-6 py-5 text-left text-[10px] font-black uppercase tracking-widest opacity-80">Type</th>
+              <th className="px-6 py-5 text-left text-[10px] font-black uppercase tracking-widest opacity-80">Date</th>
               <th className="px-6 py-5 text-right text-[10px] font-black uppercase tracking-widest opacity-80">Principal</th>
               <th className="px-6 py-5 text-center text-[10px] font-black uppercase tracking-widest opacity-80">Rate</th>
               <th className="px-6 py-5 text-right text-[10px] font-black uppercase tracking-widest opacity-80">Action</th>
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-slate-100">
-            {displayRows.map(row => (
+            {displayRows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE).map(row => (
               <tr key={row.id} className="hover:bg-slate-50 transition-colors">
                 <td className="px-6 py-5 text-sm font-bold text-slate-800 uppercase">{row.name}</td>
                 <td className="px-6 py-5">
@@ -266,30 +301,77 @@ const LoanList: React.FC<LoanListProps> = ({ liabilities, setLiabilities, custom
                       {row.type}
                    </span>
                 </td>
+                <td className="px-6 py-5 text-xs font-bold text-slate-500">
+                  {row.date ? new Date(row.date).toLocaleDateString() : '—'}
+                </td>
                 <td className="px-6 py-5 text-right text-sm font-bold text-slate-900">₹{row.principal.toLocaleString()}</td>
                 <td className="px-6 py-5 text-center text-sm font-bold text-slate-500">{row.rate}%</td>
-                <td className="px-6 py-5 text-right flex justify-end gap-2">
-                  {!row.isLent ? (
-                    <button 
-                      onClick={() => { setLiabilityAction({ item: row.raw, itemType: row.sourceType, type: 'PRINCIPAL' }); setLiabilityPayAmount(0); }} 
-                      className="text-rose-600 hover:text-rose-800 text-xs font-black uppercase tracking-wide bg-rose-50 px-3 py-1 rounded hover:bg-rose-100 transition"
+                <td className="px-6 py-5 text-right">
+                  <div className="flex justify-end items-center gap-2">
+                    {!row.isLent && (
+                      <button
+                        onClick={() => { setLiabilityAction({ item: row.raw, itemType: row.sourceType, type: 'PRINCIPAL' }); setLiabilityPayAmount(0); }}
+                        className="text-rose-600 hover:text-rose-800 text-xs font-black uppercase tracking-wide bg-rose-50 px-3 py-1 rounded hover:bg-rose-100 transition"
+                      >
+                        Repay
+                      </button>
+                    )}
+                    {row.isLent && (
+                      <span className="text-emerald-600 text-xs font-black uppercase tracking-wide">Asset</span>
+                    )}
+                    <button
+                      onClick={() => handleDelete(row)}
+                      disabled={deletingId === row.id}
+                      className="h-7 w-7 rounded-lg bg-slate-100 text-slate-400 hover:bg-rose-500 hover:text-white flex items-center justify-center transition disabled:opacity-40"
+                      title="Delete"
                     >
-                      Repay
+                      {deletingId === row.id
+                        ? <i className="fas fa-spinner fa-spin text-xs"></i>
+                        : <i className="fas fa-trash-alt text-xs"></i>}
                     </button>
-                  ) : (
-                    <span className="text-emerald-600 text-xs font-black uppercase tracking-wide">Asset</span>
-                  )}
+                  </div>
                 </td>
               </tr>
             ))}
             {displayRows.length === 0 && (
                 <tr>
-                    <td colSpan={5} className="px-6 py-8 text-center text-xs font-bold text-slate-400 uppercase tracking-widest">No records found for this category</td>
+                    <td colSpan={6} className="px-6 py-8 text-center text-xs font-bold text-slate-400 uppercase tracking-widest">No records found for this category</td>
                 </tr>
             )}
           </tbody>
         </table>
         </div>
+        {/* Pagination */}
+        {displayRows.length > PAGE_SIZE && (
+          <div className="flex items-center justify-between px-6 py-4 border-t border-slate-100 bg-slate-50">
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+              Showing {((page - 1) * PAGE_SIZE) + 1}–{Math.min(page * PAGE_SIZE, displayRows.length)} of {displayRows.length}
+            </span>
+            <div className="flex gap-2">
+              <button
+                disabled={page === 1}
+                onClick={() => setPage(p => p - 1)}
+                className="h-8 w-8 rounded-lg bg-white border border-slate-200 text-slate-600 text-xs font-black disabled:opacity-30 hover:bg-slate-100 transition"
+              >
+                <i className="fas fa-chevron-left"></i>
+              </button>
+              {Array.from({ length: Math.ceil(displayRows.length / PAGE_SIZE) }, (_, i) => i + 1).map(pg => (
+                <button
+                  key={pg}
+                  onClick={() => setPage(pg)}
+                  className={`h-8 w-8 rounded-lg text-xs font-black transition ${pg === page ? 'bg-slate-900 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'}`}
+                >{pg}</button>
+              ))}
+              <button
+                disabled={page === Math.ceil(displayRows.length / PAGE_SIZE)}
+                onClick={() => setPage(p => p + 1)}
+                className="h-8 w-8 rounded-lg bg-white border border-slate-200 text-slate-600 text-xs font-black disabled:opacity-30 hover:bg-slate-100 transition"
+              >
+                <i className="fas fa-chevron-right"></i>
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {showAddModal && (

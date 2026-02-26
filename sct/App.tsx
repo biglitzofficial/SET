@@ -23,6 +23,7 @@ const ReportCenter = React.lazy(() => import('./views/ReportCenter'));
 const Settings = React.lazy(() => import('./views/Settings'));
 const InvestmentList = React.lazy(() => import('./views/InvestmentList'));
 const ChitList = React.lazy(() => import('./views/ChitList'));
+const BusinessPerformance = React.lazy(() => import('./views/BusinessPerformance'));
 
 // --- COMPONENTS ---
 
@@ -59,12 +60,11 @@ const Sidebar = ({ role, onLogout, user }: { role: UserRole, onLogout: () => voi
       </div>
 
       {/* Brand */}
-      <div className="h-28 flex flex-col justify-center px-8 relative z-10">
-        <div className="flex items-center gap-3 mb-1">
-           <img src="/logo.png" alt="Sri Chendur Traders" className="w-10 h-10 rounded-lg object-contain bg-white p-0.5 shadow-lg" />
-           <span className="text-white font-display font-bold text-xl tracking-tight">Sri Chendur</span>
+      <div className="h-24 flex flex-col justify-center px-5 relative z-10">
+        <div className="bg-white rounded-2xl px-4 py-2 inline-flex items-center shadow-lg w-fit">
+          <img src="/logo.png" alt="Sri Chendur Traders" className="h-8 w-40 object-contain object-left" />
         </div>
-        <div className="text-[10px] text-slate-400 font-medium tracking-[0.2em] pl-11 uppercase">Finance OS</div>
+        <div className="text-[9px] text-slate-500 font-bold tracking-[0.25em] uppercase mt-2 pl-1">Finance OS</div>
       </div>
 
       {/* Navigation */}
@@ -79,8 +79,9 @@ const Sidebar = ({ role, onLogout, user }: { role: UserRole, onLogout: () => voi
         
         <div className="px-4 mb-2 mt-6 text-[10px] font-black uppercase tracking-widest text-slate-500">Assets & Liab</div>
         <NavItem to="/savings" icon="fa-piggy-bank" label="Savings Hub" />
-        <NavItem to="/loans" icon="fa-hand-holding-dollar" label="Credit Mgr" />
-        <NavItem to="/chits" icon="fa-users-viewfinder" label="Chit Funds" />
+        <NavItem to="/loans" icon="fa-hand-holding-dollar" label="Credit Hub" />
+        <NavItem to="/chits" icon="fa-users-viewfinder" label="Chit Hub" />
+        <NavItem to="/business" icon="fa-building-columns" label="Business Hub" />
         
         <div className="px-4 mb-2 mt-6 text-[10px] font-black uppercase tracking-widest text-slate-500">System</div>
         <NavItem to="/reports/ledger" icon="fa-chart-line" label="Analytics" />
@@ -139,8 +140,9 @@ const MobileMenu = ({ isOpen, onClose, role, onLogout, user }: any) => {
            {/* Header */}
            <div className="flex justify-between items-center mb-8">
               <div className="flex items-center gap-3">
-                <img src="/logo.png" alt="Sri Chendur Traders" className="h-10 w-10 rounded-xl object-contain bg-white p-0.5 shadow-lg" />
-                <span className="text-white font-bold text-lg">Menu</span>
+                <div className="bg-white rounded-xl px-2 py-1.5 shadow">
+                  <img src="/logo.png" alt="Sri Chendur Traders" className="h-7 object-contain" />
+                </div>
               </div>
               <button onClick={onClose} className="text-slate-400 hover:text-white transition">
                 <i className="fas fa-times text-xl"></i>
@@ -164,6 +166,7 @@ const MobileMenu = ({ isOpen, onClose, role, onLogout, user }: any) => {
               <MobileNavItem to="/savings" icon="fa-piggy-bank" label="Savings" />
               <MobileNavItem to="/loans" icon="fa-hand-holding-usd" label="Loans" />
               <MobileNavItem to="/chits" icon="fa-coins" label="Chit Groups" />
+              <MobileNavItem to="/business" icon="fa-building-columns" label="Business Hub" />
               <MobileNavItem to="/reports" icon="fa-chart-bar" label="Reports" />
               {role === 'OWNER' && (
                 <MobileNavItem to="/settings" icon="fa-cog" label="Settings" />
@@ -186,7 +189,15 @@ const MobileMenu = ({ isOpen, onClose, role, onLogout, user }: any) => {
   )
 }
 
-const Header = ({ onMenuToggle }: { onMenuToggle: () => void }) => (
+const Header = ({ onMenuToggle, openingBalances, bankAccounts, walletBalances }: { onMenuToggle: () => void; openingBalances: { CASH: number }; bankAccounts: { id: string; name: string; openingBalance: number; status: string }[]; walletBalances: { CASH: number; CUB: number; KVB: number } }) => {
+  const [showWallet, setShowWallet] = React.useState(false);
+  const totalBank = bankAccounts.filter(b => b.status === 'ACTIVE').reduce((s, b) => {
+    if (b.id === 'CUB') return s + walletBalances.CUB;
+    if (b.id === 'KVB') return s + walletBalances.KVB;
+    return s + b.openingBalance;
+  }, 0);
+
+  return (
   <header className="h-20 flex items-center justify-between px-8 flex-shrink-0 z-10">
     <div className="flex items-center gap-4">
        {/* Mobile Menu Button */}
@@ -203,17 +214,66 @@ const Header = ({ onMenuToggle }: { onMenuToggle: () => void }) => (
        </div>
     </div>
 
-    <div className="flex items-center gap-4">
+    <div className="flex items-center gap-3">
        <div className="hidden md:block text-right">
           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Today</div>
           <div className="text-xs font-bold text-slate-700">{new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}</div>
        </div>
+
+       {/* Wallet Balance Button */}
+       <div className="relative">
+         <button
+           onClick={() => setShowWallet(v => !v)}
+           className="h-10 w-10 bg-white rounded-full flex items-center justify-center text-indigo-500 border border-slate-100 shadow-sm hover:bg-indigo-50 hover:shadow-md transition-all"
+           title="Wallet Balances"
+         >
+           <i className="fas fa-wallet text-sm"></i>
+         </button>
+         {showWallet && (
+           <>
+             <div className="fixed inset-0 z-10" onClick={() => setShowWallet(false)} />
+             <div className="absolute top-12 right-0 bg-white rounded-2xl shadow-2xl border border-slate-200 z-20 min-w-[280px] p-3">
+               <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2 pb-2 mb-1 border-b border-slate-100">Wallet Balances</div>
+               <div className="space-y-1">
+                 {/* Cash */}
+                 <div className="flex items-center justify-between bg-emerald-50 rounded-xl px-3 py-2 border border-emerald-100">
+                   <div className="flex items-center gap-2">
+                     <i className="fas fa-cash-register text-emerald-600 text-xs"></i>
+                     <span className="text-[10px] font-black text-emerald-700 uppercase tracking-wider">Cash Drawer</span>
+                   </div>
+                   <span className="text-sm font-black text-emerald-800">₹{walletBalances.CASH.toLocaleString()}</span>
+                 </div>
+                 {/* Banks */}
+                 {bankAccounts.filter(b => b.status === 'ACTIVE').map(bank => (
+                   <div key={bank.id} className="flex items-center justify-between bg-blue-50 rounded-xl px-3 py-2 border border-blue-100">
+                     <div className="flex items-center gap-2">
+                       <i className="fas fa-building-columns text-blue-600 text-xs"></i>
+                       <span className="text-[10px] font-black text-blue-700 uppercase tracking-wider">{bank.name}</span>
+                     </div>
+                     <span className="text-sm font-black text-blue-800">₹{(bank.id === 'CUB' ? walletBalances.CUB : bank.id === 'KVB' ? walletBalances.KVB : bank.openingBalance).toLocaleString()}</span>
+                   </div>
+                 ))}
+                 {/* Total */}
+                 <div className="flex items-center justify-between bg-indigo-600 rounded-xl px-3 py-2 mt-1">
+                   <div className="flex items-center gap-2">
+                     <i className="fas fa-chart-line text-indigo-200 text-xs"></i>
+                     <span className="text-[10px] font-black text-indigo-100 uppercase tracking-wider">Total Bank</span>
+                   </div>
+                   <span className="text-sm font-black text-white">₹{totalBank.toLocaleString()}</span>
+                 </div>
+               </div>
+             </div>
+           </>
+         )}
+       </div>
+
        <button className="h-10 w-10 bg-white rounded-full flex items-center justify-center text-slate-400 border border-slate-100 shadow-sm hover:text-brand-600 hover:shadow-md transition-all">
           <i className="fas fa-bell"></i>
        </button>
     </div>
   </header>
-);
+  );
+};
 
 const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(() => {
@@ -481,7 +541,7 @@ const App: React.FC = () => {
         <Sidebar role={role} onLogout={handleLogout} user={currentUser} />
         
         <div className="flex-1 flex flex-col h-full overflow-hidden relative">
-          <Header onMenuToggle={() => setIsMobileMenuOpen(!isMobileMenuOpen)} />
+          <Header onMenuToggle={() => setIsMobileMenuOpen(!isMobileMenuOpen)} openingBalances={openingBalances} bankAccounts={bankAccounts} walletBalances={{ CASH: stats.cashInHand, CUB: stats.bankCUB, KVB: stats.bankKVB }} />
           <main className="flex-1 overflow-y-auto px-4 md:px-8 pb-8 custom-scrollbar scroll-smooth">
             <Suspense fallback={
               <div className="h-full w-full flex items-center justify-center">
@@ -539,6 +599,7 @@ const App: React.FC = () => {
                 />} />
                 <Route path="/loans" element={<LoanList liabilities={liabilities} setLiabilities={setLiabilities} customers={customers} setCustomers={setCustomers} invoices={invoices} payments={payments} setPayments={setPayments} />} />
                 <Route path="/chits" element={<ChitList chitGroups={chitGroups} setChitGroups={setChitGroups} customers={customers} invoices={invoices} investments={investments} setInvestments={setInvestments} setPayments={setPayments} setInvoices={setInvoices} currentUser={currentUser} />} />
+                <Route path="/business" element={<BusinessPerformance payments={payments} otherBusinesses={otherBusinesses} />} />
                 <Route path="/settings" element={<Settings 
                   expenseCategories={expenseCategories} setExpenseCategories={setExpenseCategories} 
                   savingCategories={savingCategories} setSavingCategories={setSavingCategories}

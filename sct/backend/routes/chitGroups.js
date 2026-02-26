@@ -18,8 +18,8 @@ router.get('/', authenticate, async (req, res) => {
 
     const snapshot = await query.orderBy('startDate', 'desc').get();
     const chitGroups = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data()
+      ...doc.data(),
+      id: doc.id
     }));
 
     res.json(chitGroups);
@@ -38,7 +38,7 @@ router.get('/:id', authenticate, async (req, res) => {
       return res.status(404).json({ error: { message: 'Chit group not found' } });
     }
 
-    res.json({ id: doc.id, ...doc.data() });
+    res.json({ ...doc.data(), id: doc.id });
   } catch (error) {
     console.error('Get chit group error:', error);
     res.status(500).json({ error: { message: 'Failed to fetch chit group' } });
@@ -164,6 +164,39 @@ router.post('/:id/auctions', [
   } catch (error) {
     console.error('Add auction error:', error);
     res.status(500).json({ error: { message: 'Failed to add auction' } });
+  }
+});
+
+// Delete auction from chit group
+router.delete('/:id/auctions/:auctionId', [
+  authenticate,
+  checkPermission('canDelete')
+], async (req, res) => {
+  try {
+    const docRef = db.collection(COLLECTIONS.CHIT_GROUPS).doc(req.params.id);
+    const doc = await docRef.get();
+
+    if (!doc.exists) {
+      return res.status(404).json({ error: { message: 'Chit group not found' } });
+    }
+
+    const chitGroup = doc.data();
+    const updatedAuctions = chitGroup.auctions.filter(a => a.id !== req.params.auctionId);
+
+    if (updatedAuctions.length === chitGroup.auctions.length) {
+      return res.status(404).json({ error: { message: 'Auction not found' } });
+    }
+
+    await docRef.update({
+      auctions: updatedAuctions,
+      currentMonth: updatedAuctions.length + 1,
+      updatedAt: Date.now()
+    });
+
+    res.json({ message: 'Auction deleted successfully', remainingAuctions: updatedAuctions.length });
+  } catch (error) {
+    console.error('Delete auction error:', error);
+    res.status(500).json({ error: { message: 'Failed to delete auction' } });
   }
 });
 

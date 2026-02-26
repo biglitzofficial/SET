@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Shield shape -->
+  <path d="M32 2 L58 12 L58 34 C58 48 46 58 32 62 C18 58 6 48 6 34 L6 12 Z"
+        fill="#1e1b4b"/>
+  <!-- Inner shield highlight -->
+  <path d="M32 7 L54 16 L54 34 C54 46 43 55 32 58.5 C21 55 10 46 10 34 L10 16 Z"
+        fill="#312e81"/>
+  <!-- S -->
+  <text x="14" y="42" font-family="Arial Black, sans-serif" font-weight="900"
+        font-size="22" fill="#ffffff" letter-spacing="-1">SCT</text>
+</svg>

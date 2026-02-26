@@ -232,6 +232,11 @@ export const chitAPI = {
       method: 'POST',
       body: JSON.stringify(auctionData),
     }),
+
+  deleteAuction: (groupId: string, auctionId: string) =>
+    apiRequest<any>(`/chit-groups/${groupId}/auctions/${auctionId}`, {
+      method: 'DELETE',
+    }),
 };
 
 // Liabilities API
@@ -249,6 +254,9 @@ export const liabilityAPI = {
       method: 'PUT',
       body: JSON.stringify(liability),
     }),
+
+  delete: (id: string) =>
+    apiRequest<void>(`/liabilities/${id}`, { method: 'DELETE' }),
 };
 
 // Investments API
@@ -268,7 +276,7 @@ export const investmentAPI = {
     }),
   
   recordTransaction: (id: string, transaction: any) =>
-    apiRequest<any>(`/investments/${id}/transaction`, {
+    apiRequest<any>(`/investments/${id}/transactions`, {
       method: 'POST',
       body: JSON.stringify(transaction),
     }),

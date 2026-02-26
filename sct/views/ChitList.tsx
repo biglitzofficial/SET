@@ -1,7 +1,7 @@
 
 import React, { useState, useMemo } from 'react';
 import { ChitGroup, Customer, Invoice, Investment, ChitAuction, Payment, StaffUser } from '../types';
-import { chitAPI } from '../services/api';
+import { chitAPI, invoiceAPI, investmentAPI } from '../services/api';
 
 interface ChitListProps {
   chitGroups: ChitGroup[];
@@ -18,6 +18,7 @@ interface ChitListProps {
 const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customers, invoices, investments, setInvestments, setPayments, setInvoices, currentUser }) => {
   // Use ID to track selection to ensure state updates reflect immediately
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<'card' | 'list'>('list');
   
   // Derived active group from main state
   const selectedGroup = useMemo(() => 
@@ -32,6 +33,10 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
 
   // Passbook State
   const [viewPassbookContext, setViewPassbookContext] = useState<{ memberId: string, seatIndex: number } | null>(null);
+
+  // Auction Summary Table State
+  const [showAuctionTableGroupId, setShowAuctionTableGroupId] = useState<string | null>(null);
+  const auctionTableGroup = useMemo(() => chitGroups.find(g => g.id === showAuctionTableGroupId) || null, [chitGroups, showAuctionTableGroupId]);
   
   const initialFormState: ChitGroup = {
     id: '',
@@ -138,7 +143,7 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
   };
 
   // --- LOGIC: MOVE TO SAVINGS ---
-  const handleAddToSavings = (auction: ChitAuction, group: ChitGroup) => {
+  const handleAddToSavings = async (auction: ChitAuction, group: ChitGroup) => {
     const confirm = window.confirm(`Move ₹${auction.winnerHand.toLocaleString()} to Savings Hub?`);
     if(!confirm) return;
 
@@ -156,49 +161,56 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
         remarks: `Generated from Chit Auction #${auction.month} (Winner: ${auction.winnerName})`
     };
 
-    setInvestments(prev => [...prev, newInvestment]);
-    alert("Successfully Capitalized! View in Savings Hub.");
+    try {
+      const created = await investmentAPI.create(newInvestment);
+      setInvestments(prev => [...prev, created]);
+      alert("Successfully Capitalized! View in Savings Hub.");
+    } catch (error) {
+      console.error('Failed to save investment:', error);
+      alert('Failed to move to Savings Hub. Please try again.');
+    }
   };
 
   // --- LOGIC: REVERT AUCTION (CASCADE DELETE) ---
-  const handleRevertAuction = (groupId: string, auctionId: string) => {
-     if(!window.confirm("WARNING: This will delete the auction, and ALL associated invoices and payments from the ledger. This action cannot be undone. Proceed?")) return;
+  const [isRevertingAuction, setIsRevertingAuction] = useState<string | null>(null);
 
-     // 1. Identify invoices to delete (based on relatedAuctionId)
-     // Since invoices holds the relatedAuctionId, we can filter them.
-     // NOTE: This assumes 'invoices' prop is up to date.
-     const invoicesToDelete = invoices.filter(inv => inv.relatedAuctionId === auctionId);
-     const invoiceIds = invoicesToDelete.map(inv => inv.id);
+  const handleRevertAuction = async (groupId: string, auctionId: string) => {
+     if (isRevertingAuction) return;
+     if (!window.confirm('WARNING: This will delete the auction and ALL associated invoices from the ledger. This cannot be undone. Proceed?')) return;
+     setIsRevertingAuction(auctionId);
+     try {
+       // 1. Delete linked invoices from backend
+       const invoicesToDelete = invoices.filter(inv => inv.relatedAuctionId === auctionId);
+       const invoiceIds = invoicesToDelete.map(inv => inv.id);
+       if (invoiceIds.length > 0) {
+         await invoiceAPI.bulkDelete(invoiceIds);
+         if (setInvoices) setInvoices(prev => prev.filter(inv => !invoiceIds.includes(inv.id)));
+       }
 
-     // 2. Delete Invoices
-     if (setInvoices) {
-        setInvoices(prev => prev.filter(inv => inv.relatedAuctionId !== auctionId));
+       // 2. Delete linked payments from local state
+       if (setPayments) {
+         setPayments(prev => prev.filter(p => {
+           const isLinkedToAuction = p.relatedAuctionId === auctionId;
+           const isLinkedToDeletedInvoice = p.invoiceId && invoiceIds.includes(p.invoiceId);
+           return !(isLinkedToAuction || isLinkedToDeletedInvoice);
+         }));
+       }
+
+       // 3. Remove auction from chit group in Firestore
+       await chitAPI.deleteAuction(groupId, auctionId);
+
+       // 4. Update local state
+       setChitGroups(prev => prev.map(g => {
+         if (g.id !== groupId) return g;
+         const updatedAuctions = g.auctions.filter(a => a.id !== auctionId);
+         return { ...g, auctions: updatedAuctions, currentMonth: updatedAuctions.length + 1 };
+       }));
+     } catch (error: any) {
+       console.error('Failed to revert auction:', error);
+       alert('Failed to delete auction: ' + (error?.message || 'Please try again.'));
+     } finally {
+       setIsRevertingAuction(null);
      }
-
-     // 3. Delete Payments (Cascade from Deleted Invoices OR directly linked to Auction)
-     if (setPayments) {
-        setPayments(prev => prev.filter(p => {
-            const isLinkedToAuction = p.relatedAuctionId === auctionId;
-            const isLinkedToDeletedInvoice = p.invoiceId && invoiceIds.includes(p.invoiceId);
-            // If either condition is true, filter it out (return false)
-            return !(isLinkedToAuction || isLinkedToDeletedInvoice);
-        }));
-     }
-
-     // 4. Update Chit Group (Remove Auction)
-     setChitGroups(prevGroups => prevGroups.map(group => {
-        if (group.id !== groupId) return group;
-
-        const updatedAuctions = group.auctions.filter(a => a.id !== auctionId);
-        // Recalculate current month based on strictly remaining auctions
-        const newCurrentMonth = updatedAuctions.length + 1;
-
-        return { 
-            ...group, 
-            auctions: updatedAuctions, 
-            currentMonth: newCurrentMonth 
-        };
-     }));
   };
 
   // --- HELPER: MEMBER STATS ---
@@ -271,12 +283,124 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
           <h2 className="text-3xl font-black text-slate-800 uppercase tracking-tighter italic">Chit Hub</h2>
           <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Micro-savings Group Management</p>
         </div>
-        <button onClick={openCreate} className="px-6 py-3 bg-orange-500 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-lg hover:bg-orange-600 transition hover:scale-105">
-           + New Chit Group
-        </button>
+        <div className="flex items-center gap-3">
+          <div className="flex bg-slate-100 rounded-2xl p-1">
+            <button
+              onClick={() => setViewMode('card')}
+              title="Card View"
+              className={`px-3 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition ${
+                viewMode === 'card' ? 'bg-white text-orange-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'
+              }`}
+            >
+              <i className="fas fa-th-large"></i>
+            </button>
+            <button
+              onClick={() => setViewMode('list')}
+              title="List View"
+              className={`px-3 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition ${
+                viewMode === 'list' ? 'bg-white text-orange-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'
+              }`}
+            >
+              <i className="fas fa-list"></i>
+            </button>
+          </div>
+          <button onClick={openCreate} className="px-6 py-3 bg-orange-500 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-lg hover:bg-orange-600 transition hover:scale-105">
+            + New Chit Group
+          </button>
+        </div>
       </header>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+      {viewMode === 'list' && (
+        <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="bg-slate-50 border-b border-slate-100">
+                <th className="px-5 py-4 text-left text-[10px] font-black uppercase tracking-widest text-slate-400">S.No</th>
+                <th className="px-5 py-4 text-left text-[10px] font-black uppercase tracking-widest text-slate-400">Name</th>
+                <th className="px-5 py-4 text-left text-[10px] font-black uppercase tracking-widest text-slate-400">Chit Value</th>
+                <th className="px-5 py-4 text-left text-[10px] font-black uppercase tracking-widest text-slate-400">Installment</th>
+                <th className="px-5 py-4 text-left text-[10px] font-black uppercase tracking-widest text-slate-400">Members</th>
+                <th className="px-5 py-4 text-left text-[10px] font-black uppercase tracking-widest text-slate-400">Auctions</th>
+                <th className="px-5 py-4 text-left text-[10px] font-black uppercase tracking-widest text-slate-400">Progress</th>
+                <th className="px-5 py-4 text-left text-[10px] font-black uppercase tracking-widest text-slate-400">Status</th>
+                <th className="px-5 py-4 text-left text-[10px] font-black uppercase tracking-widest text-slate-400">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {chitGroups.map((group, idx) => {
+                const filledCount = group.auctions.length;
+                const isCompleted = filledCount >= group.durationMonths;
+                const progress = group.durationMonths > 0 ? Math.round((filledCount / group.durationMonths) * 100) : 0;
+                return (
+                  <tr key={group.id} className="border-b border-slate-50 hover:bg-orange-50/40 transition">
+                    <td className="px-5 py-4 font-black text-slate-400">{idx + 1}</td>
+                    <td className="px-5 py-4 font-black text-slate-800 uppercase italic tracking-tight">{group.name}</td>
+                    <td className="px-5 py-4 font-black text-slate-700">₹{group.totalValue.toLocaleString()}</td>
+                    <td className="px-5 py-4 font-black text-slate-700">₹{group.monthlyInstallment.toLocaleString()}</td>
+                    <td className="px-5 py-4 font-black text-slate-700">{group.members.length}</td>
+                    <td className="px-5 py-4 font-black text-orange-600">{filledCount} / {group.durationMonths}</td>
+                    <td className="px-5 py-4">
+                      <div className="flex items-center gap-2">
+                        <div className="w-20 bg-slate-100 h-1.5 rounded-full overflow-hidden">
+                          <div className="bg-orange-500 h-full rounded-full transition-all" style={{ width: `${progress}%` }}></div>
+                        </div>
+                        <span className="font-black text-slate-500 text-[10px]">{progress}%</span>
+                      </div>
+                    </td>
+                    <td className="px-5 py-4">
+                      <span className={`text-[9px] font-black uppercase px-2.5 py-1 rounded-full tracking-widest ${
+                        isCompleted ? 'bg-emerald-50 text-emerald-600' : 'bg-orange-50 text-orange-600'
+                      }`}>
+                        {isCompleted ? 'Completed' : 'Active'}
+                      </span>
+                    </td>
+                    <td className="px-5 py-4">
+                      <div className="flex items-center gap-4">
+                        <button onClick={() => setSelectedGroupId(group.id)} className="text-[10px] font-black uppercase tracking-widest text-indigo-600 hover:underline">Ledger</button>
+                        <button onClick={() => setShowAuctionTableGroupId(group.id)} className="text-[10px] font-black uppercase tracking-widest text-emerald-600 hover:underline">Auctions</button>
+                        {currentUser?.permissions.canEdit && (
+                          <button onClick={() => openEdit(group)} className="text-slate-300 hover:text-indigo-600 transition"><i className="fas fa-pen"></i></button>
+                        )}
+                        {currentUser?.permissions.canDelete && (
+                          <button onClick={async () => {
+                            if (!confirm(`Are you sure you want to delete "${group.name}"? This will also delete all related invoices. This cannot be undone.`)) return;
+                            try {
+                              const auctionIds = new Set(group.auctions.map(a => a.id));
+                              const linkedInvoiceIds = invoices
+                                .filter(inv => inv.relatedAuctionId && auctionIds.has(inv.relatedAuctionId))
+                                .map(inv => inv.id);
+                              if (linkedInvoiceIds.length > 0) {
+                                await invoiceAPI.bulkDelete(linkedInvoiceIds);
+                                if (setInvoices) setInvoices(prev => prev.filter(inv => !linkedInvoiceIds.includes(inv.id)));
+                              }
+                              await chitAPI.delete(group.id);
+                              const freshGroups = await chitAPI.getAll();
+                              setChitGroups(freshGroups);
+                            } catch (error) {
+                              console.error('Failed to delete chit group:', error);
+                              alert('Failed to delete chit group. Please try again.');
+                            }
+                          }} className="text-slate-300 hover:text-red-500 transition"><i className="fas fa-trash-can"></i></button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+            <tfoot>
+              <tr className="bg-slate-50 border-t-2 border-slate-200">
+                <td colSpan={3} className="px-5 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400">Total Groups: {chitGroups.length}</td>
+                <td className="px-5 py-4 font-black text-slate-800">₹{chitGroups.reduce((s, g) => s + g.monthlyInstallment, 0).toLocaleString()}</td>
+                <td className="px-5 py-4 font-black text-slate-800">{chitGroups.reduce((s, g) => s + g.members.length, 0)}</td>
+                <td colSpan={4}></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      )}
+
+      {viewMode === 'card' && <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
         {chitGroups.map(group => {
           const filledCount = group.auctions.length;
           const isCompleted = filledCount >= group.durationMonths;
@@ -309,9 +433,31 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
                    </div>
                 </div>
               </div>
+              {group.auctions.length > 0 && (() => {
+                const totalVasool = group.auctions.reduce((s, a) => s + group.members.length * (group.monthlyInstallment - a.dividendPerMember), 0);
+                const totalCompany = group.auctions.reduce((s, a) => s + a.commissionAmount, 0);
+                const totalHands = group.auctions.reduce((s, a) => s + a.winnerHand, 0);
+                return (
+                  <div className="grid grid-cols-3 border-t border-slate-100 bg-slate-50 divide-x divide-slate-100">
+                    <div className="px-4 py-3 text-center">
+                      <div className="text-[8px] font-black uppercase tracking-wider text-slate-400">Total Vasool</div>
+                      <div className="text-[11px] font-black text-emerald-600 mt-0.5">₹{totalVasool.toLocaleString()}</div>
+                    </div>
+                    <div className="px-4 py-3 text-center">
+                      <div className="text-[8px] font-black uppercase tracking-wider text-slate-400">Company Amt</div>
+                      <div className="text-[11px] font-black text-indigo-600 mt-0.5">₹{totalCompany.toLocaleString()}</div>
+                    </div>
+                    <div className="px-4 py-3 text-center">
+                      <div className="text-[8px] font-black uppercase tracking-wider text-slate-400">Total Hands</div>
+                      <div className="text-[11px] font-black text-orange-600 mt-0.5">₹{totalHands.toLocaleString()}</div>
+                    </div>
+                  </div>
+                );
+              })()}
               <div className="mt-auto bg-slate-50 p-6 border-t flex justify-between items-center group-hover:bg-orange-50 transition">
                  <div className="flex gap-4">
                     <button onClick={() => setSelectedGroupId(group.id)} className="text-[10px] font-black uppercase tracking-widest text-indigo-600 hover:underline">View Ledger</button>
+                    <button onClick={() => setShowAuctionTableGroupId(group.id)} className="text-[10px] font-black uppercase tracking-widest text-emerald-600 hover:underline">Auction Table</button>
                  </div>
                  <div className="flex gap-3">
                     {currentUser?.permissions.canEdit && (
@@ -319,11 +465,22 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
                     )}
                     {currentUser?.permissions.canDelete && (
                        <button onClick={async () => {
-                          if (!confirm(`Are you sure you want to delete "${group.name}"? This cannot be undone.`)) return;
+                          if (!confirm(`Are you sure you want to delete "${group.name}"? This will also delete all related invoices. This cannot be undone.`)) return;
                           try {
+                            // 1. Cascade-delete all invoices linked to this chit group's auctions
+                            const auctionIds = new Set(group.auctions.map(a => a.id));
+                            const linkedInvoiceIds = invoices
+                              .filter(inv => inv.relatedAuctionId && auctionIds.has(inv.relatedAuctionId))
+                              .map(inv => inv.id);
+                            if (linkedInvoiceIds.length > 0) {
+                              await invoiceAPI.bulkDelete(linkedInvoiceIds);
+                              if (setInvoices) setInvoices(prev => prev.filter(inv => !linkedInvoiceIds.includes(inv.id)));
+                            }
+                            // 2. Delete the chit group itself
                             await chitAPI.delete(group.id);
-                            setChitGroups(prev => prev.filter(g => g.id !== group.id));
-                            console.log('Chit group deleted:', group.id);
+                            // 3. Reload from server to confirm deletion persisted
+                            const freshGroups = await chitAPI.getAll();
+                            setChitGroups(freshGroups);
                           } catch (error) {
                             console.error('Failed to delete chit group:', error);
                             alert('Failed to delete chit group. Please try again.');
@@ -335,7 +492,7 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
             </div>
           );
         })}
-      </div>
+      </div>}
 
       {/* --- MODAL: CREATE / EDIT CHIT GROUP --- */}
       {showForm && (
@@ -607,15 +764,18 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
                                     {index === 0 && currentUser?.permissions.canDelete && (
                                        <button 
                                           type="button"
+                                          disabled={isRevertingAuction === auc.id}
                                           onClick={(e) => { 
                                               e.preventDefault();
                                               e.stopPropagation(); 
                                               handleRevertAuction(selectedGroup.id, auc.id); 
                                           }} 
-                                          className="text-[8px] font-black uppercase tracking-widest bg-rose-100 text-rose-600 px-3 py-1 rounded hover:bg-rose-500 hover:text-white transition cursor-pointer" 
+                                          className="text-[8px] font-black uppercase tracking-widest bg-rose-100 text-rose-600 px-3 py-1 rounded hover:bg-rose-500 hover:text-white transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed" 
                                           title="Revert Latest Auction & Delete Associated Invoices"
                                        >
-                                          <i className="fas fa-trash-alt mr-1"></i> Delete
+                                          {isRevertingAuction === auc.id
+                                            ? <><i className="fas fa-spinner fa-spin mr-1"></i> Deleting...</>
+                                            : <><i className="fas fa-trash-alt mr-1"></i> Delete</>}
                                        </button>
                                     )}
                                 </div>
@@ -770,6 +930,139 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
               )}
 
            </div>
+        </div>
+      )}
+      {/* --- AUCTION SUMMARY TABLE MODAL --- */}
+      {auctionTableGroup && (
+        <div className="fixed inset-0 bg-slate-900/95 flex items-start justify-center z-[600] p-4 backdrop-blur-xl overflow-y-auto">
+          <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-7xl my-6 flex flex-col overflow-hidden animate-scaleUp border border-slate-200">
+            {/* Header */}
+            <div className="bg-slate-900 text-white px-8 py-6 flex justify-between items-center flex-shrink-0">
+              <div>
+                <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Auction Summary</div>
+                <h3 className="text-2xl font-black italic tracking-tighter text-white">{auctionTableGroup.name}</h3>
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">₹{auctionTableGroup.totalValue.toLocaleString()} Valuation • {auctionTableGroup.auctions.length} Auctions Conducted</p>
+              </div>
+              <button onClick={() => setShowAuctionTableGroupId(null)} className="h-11 w-11 bg-slate-800 rounded-full flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-700 transition"><i className="fas fa-times text-lg"></i></button>
+            </div>
+
+            {/* Table */}
+            <div className="overflow-x-auto p-6">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="bg-emerald-600 text-white">
+                    {['TID','Chit Name','Chit Taken By','Month','Chit Value','Chit Amount','Company Amt','Kasar','Payable/Member','To Hand','Total Vasool','Date'].map(h => (
+                      <th key={h} className="px-3 py-3 text-left text-[9px] font-black uppercase tracking-wider whitespace-nowrap">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...auctionTableGroup.auctions].sort((a,b) => b.month - a.month).map((auc, idx) => {
+                    const payablePerMember = auctionTableGroup.monthlyInstallment - auc.dividendPerMember;
+                    const totalVasool = auctionTableGroup.members.length * payablePerMember;
+                    const customer = customers.find(c => c.id === auc.winnerId);
+                    const takenBy = customer ? `${customer.phone}-${customer.name}-C` : auc.winnerName;
+                    const monthStr = new Date(auc.date).toLocaleDateString('en-IN', { year: 'numeric', month: '2-digit' }).replace('/', '-');
+                    return (
+                      <tr key={auc.id} className={`border-b border-slate-100 hover:bg-slate-50 ${idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}`}>
+                        <td className="px-3 py-3">
+                          <span className="inline-flex items-center justify-center h-6 min-w-[2rem] px-2 rounded-full bg-emerald-500 text-white text-[9px] font-black">#{auc.month}</span>
+                        </td>
+                        <td className="px-3 py-3 font-black text-slate-800">{auctionTableGroup.name}</td>
+                        <td className="px-3 py-3 font-bold text-slate-700 max-w-[160px] truncate">{takenBy}</td>
+                        <td className="px-3 py-3 font-bold text-slate-600">{monthStr}</td>
+                        <td className="px-3 py-3 font-bold text-slate-800 tabular-nums">₹{auctionTableGroup.totalValue.toLocaleString()}</td>
+                        <td className="px-3 py-3 font-bold text-orange-600 tabular-nums">₹{auc.bidAmount.toLocaleString()}</td>
+                        <td className="px-3 py-3 font-bold text-slate-700 tabular-nums">₹{auc.commissionAmount.toLocaleString()}</td>
+                        <td className="px-3 py-3 font-bold text-indigo-600 tabular-nums">₹{auc.dividendPerMember.toLocaleString()}</td>
+                        <td className="px-3 py-3 font-bold text-slate-800 tabular-nums">₹{payablePerMember.toLocaleString()}</td>
+                        <td className="px-3 py-3 font-black text-emerald-700 tabular-nums">₹{auc.winnerHand.toLocaleString()}</td>
+                        <td className="px-3 py-3 font-bold text-slate-700 tabular-nums">₹{totalVasool.toLocaleString()}</td>
+                        <td className="px-3 py-3 font-bold text-slate-500 whitespace-nowrap">{new Date(auc.date).toLocaleDateString('en-IN')}</td>
+                      </tr>
+                    );
+                  })}
+                  {/* Totals Row */}
+                  {(() => {
+                    const totals = auctionTableGroup.auctions.reduce((acc, auc) => {
+                      const payable = auctionTableGroup.monthlyInstallment - auc.dividendPerMember;
+                      return {
+                        chitValue: acc.chitValue + auctionTableGroup.totalValue,
+                        chitAmount: acc.chitAmount + auc.bidAmount,
+                        companyAmt: acc.companyAmt + auc.commissionAmount,
+                        kasar: acc.kasar + auc.dividendPerMember,
+                        payable: acc.payable + payable,
+                        toHand: acc.toHand + auc.winnerHand,
+                        vasool: acc.vasool + auctionTableGroup.members.length * payable,
+                      };
+                    }, { chitValue:0, chitAmount:0, companyAmt:0, kasar:0, payable:0, toHand:0, vasool:0 });
+                    return (
+                      <tr className="bg-emerald-50 border-t-2 border-emerald-300 font-black text-slate-900">
+                        <td className="px-3 py-3 text-[10px] uppercase tracking-widest" colSpan={4}>Total <span className="text-emerald-700">({auctionTableGroup.auctions.length} auctions)</span></td>
+                        <td className="px-3 py-3 tabular-nums">₹{totals.chitValue.toLocaleString()}</td>
+                        <td className="px-3 py-3 tabular-nums text-orange-700">₹{totals.chitAmount.toLocaleString()}</td>
+                        <td className="px-3 py-3 tabular-nums">₹{totals.companyAmt.toLocaleString()}</td>
+                        <td className="px-3 py-3 tabular-nums text-indigo-700">₹{totals.kasar.toLocaleString()}</td>
+                        <td className="px-3 py-3 tabular-nums">₹{totals.payable.toLocaleString()}</td>
+                        <td className="px-3 py-3 tabular-nums text-emerald-700">₹{totals.toHand.toLocaleString()}</td>
+                        <td className="px-3 py-3 tabular-nums">₹{totals.vasool.toLocaleString()}</td>
+                        <td className="px-3 py-3"></td>
+                      </tr>
+                    );
+                  })()}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Members who haven't taken (not won) */}
+            {(() => {
+              const wonIds = new Set(auctionTableGroup.auctions.map(a => a.winnerId));
+              const notTakenMembers = [...new Set(auctionTableGroup.members)]
+                .map(id => customers.find(c => c.id === id))
+                .filter(c => c && !wonIds.has(c.id)) as Customer[];
+              if (notTakenMembers.length === 0) return null;
+              return (
+                <div className="px-6 pb-6">
+                  <div className="bg-rose-50 border border-rose-200 rounded-2xl p-5">
+                    <h4 className="text-[10px] font-black uppercase tracking-widest text-rose-600 mb-4 flex items-center gap-2">
+                      <i className="fas fa-clock"></i> Not Yet Taken ({notTakenMembers.length} members)
+                    </h4>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="bg-rose-100 text-rose-700">
+                            <th className="px-3 py-2 text-left text-[9px] font-black uppercase tracking-wider">#</th>
+                            <th className="px-3 py-2 text-left text-[9px] font-black uppercase tracking-wider">Member Name</th>
+                            <th className="px-3 py-2 text-left text-[9px] font-black uppercase tracking-wider">Phone</th>
+                            <th className="px-3 py-2 text-left text-[9px] font-black uppercase tracking-wider">Seats Held</th>
+                            <th className="px-3 py-2 text-left text-[9px] font-black uppercase tracking-wider">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {notTakenMembers.map((c, i) => {
+                            const seats = auctionTableGroup.members.filter(m => m === c.id).length;
+                            return (
+                              <tr key={c.id} className="border-b border-rose-100 hover:bg-rose-50">
+                                <td className="px-3 py-2 text-slate-500">{i + 1}</td>
+                                <td className="px-3 py-2 font-black text-slate-800">{c.name}</td>
+                                <td className="px-3 py-2 text-slate-600">{c.phone}</td>
+                                <td className="px-3 py-2">
+                                  <span className="px-2 py-0.5 bg-orange-100 text-orange-700 rounded-full text-[9px] font-black">{seats} seat{seats > 1 ? 's' : ''}</span>
+                                </td>
+                                <td className="px-3 py-2">
+                                  <span className="px-2 py-0.5 bg-rose-100 text-rose-700 rounded-full text-[9px] font-black uppercase">Pending</span>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
         </div>
       )}
     </div>

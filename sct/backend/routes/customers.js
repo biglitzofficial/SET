@@ -18,8 +18,8 @@ router.get('/', authenticate, async (req, res) => {
 
     const snapshot = await query.get();
     let customers = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data()
+      ...doc.data(),
+      id: doc.id
     }));
 
     // Filter by type (multiple flags can be true)
@@ -52,7 +52,7 @@ router.get('/:id', authenticate, async (req, res) => {
       return res.status(404).json({ error: { message: 'Customer not found' } });
     }
 
-    res.json({ id: doc.id, ...doc.data() });
+    res.json({ ...doc.data(), id: doc.id });
   } catch (error) {
     console.error('Get customer error:', error);
     res.status(500).json({ error: { message: 'Failed to fetch customer' } });
@@ -73,8 +73,9 @@ router.post('/', [
       return res.status(400).json({ errors: errors.array() });
     }
 
+    const { id: _clientId, ...bodyData } = req.body;
     const customerData = {
-      ...req.body,
+      ...bodyData,
       createdAt: Date.now(),
       createdBy: req.user.id
     };
