@@ -19,6 +19,17 @@ const PaymentList: React.FC<PaymentListProps> = ({
   expenseCategories, otherBusinesses
 }) => {
   const [showForm, setShowForm] = useState(false);
+  const safeDateToInput = (ts: number | undefined | null): string => {
+    if (ts == null || !Number.isFinite(ts)) return new Date().toISOString().slice(0, 10);
+    const d = new Date(ts);
+    return isNaN(d.getTime()) ? new Date().toISOString().slice(0, 10) : d.toISOString().slice(0, 10);
+  };
+  const safeFormatDate = (ts: number | undefined | null): string => {
+    if (ts == null || !Number.isFinite(ts)) return '—';
+    const d = new Date(ts);
+    return isNaN(d.getTime()) ? '—' : d.toLocaleDateString();
+  };
+
   const [formData, setFormData] = useState<Partial<Payment>>({
     type: 'IN',
     amount: 0,
@@ -36,7 +47,7 @@ const PaymentList: React.FC<PaymentListProps> = ({
     const newPayment: Payment = {
       ...formData as Payment,
       id: Math.random().toString(36).substr(2, 9),
-      date: new Date(formData.date!).getTime()
+      date: Number.isFinite(formData.date) ? formData.date! : Date.now()
     };
 
     if (newPayment.type === 'IN' && newPayment.invoiceId) {
@@ -83,7 +94,7 @@ const PaymentList: React.FC<PaymentListProps> = ({
 
       <div className="bg-white rounded-[1.5rem] shadow-lg border border-slate-200 overflow-hidden">
         <table className="w-full text-left">
-          <thead className="bg-dark-900 text-white">
+          <thead className="bg-slate-900 text-white">
             <tr>
               <th className="px-6 py-5 text-[10px] font-black uppercase tracking-widest opacity-80">Date</th>
               <th className="px-6 py-5 text-[10px] font-black uppercase tracking-widest opacity-80">Category / Source</th>
@@ -95,7 +106,7 @@ const PaymentList: React.FC<PaymentListProps> = ({
           <tbody className="divide-y divide-slate-50">
             {payments.map(p => (
               <tr key={p.id} className="hover:bg-slate-50 transition group">
-                <td className="px-6 py-5 text-xs font-bold text-slate-500">{new Date(p.date).toLocaleDateString()}</td>
+                <td className="px-6 py-5 text-xs font-bold text-slate-500">{safeFormatDate(p.date)}</td>
                 <td className="px-6 py-5">
                   <div className="font-bold text-slate-800 text-sm uppercase">{p.sourceName}</div>
                   <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest">{p.category}</div>
@@ -104,7 +115,7 @@ const PaymentList: React.FC<PaymentListProps> = ({
                   <span className="px-2 py-1 bg-slate-100 text-slate-600 rounded text-[9px] font-black uppercase tracking-widest">{p.mode}</span>
                 </td>
                 <td className={`px-6 py-5 text-right font-display font-black text-lg italic ${p.type === 'IN' ? 'text-emerald-600' : 'text-rose-500'}`}>
-                  {p.type === 'IN' ? '+' : '-'} ₹{p.amount.toLocaleString()}
+                  {p.type === 'IN' ? '+' : '-'} {p.amount.toLocaleString()}
                 </td>
                 <td className="px-6 py-5 text-xs text-slate-400 truncate max-w-[200px] font-bold">{p.notes || '--'}</td>
               </tr>
@@ -206,12 +217,12 @@ const PaymentList: React.FC<PaymentListProps> = ({
 
               <div className="grid grid-cols-2 gap-6">
                 <div>
-                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Amount (₹)</label>
+                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Amount ()</label>
                   <input required type="number" className="w-full border-2 border-slate-100 p-3 rounded-2xl text-xl font-display font-black outline-none focus:border-indigo-500 bg-slate-50 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={formData.amount} onChange={e => setFormData({...formData, amount: Number(e.target.value)})} />
                 </div>
                 <div>
                   <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Entry Date</label>
-                  <input required type="date" className="w-full border-2 border-slate-100 p-3 rounded-2xl text-xs font-bold outline-none focus:border-indigo-500 bg-slate-50" value={new Date(formData.date!).toISOString().substr(0,10)} onChange={e => setFormData({...formData, date: new Date(e.target.value).getTime()})} />
+                  <input required type="date" className="w-full border-2 border-slate-100 p-3 rounded-2xl text-xs font-bold outline-none focus:border-indigo-500 bg-slate-50" value={safeDateToInput(formData.date)} onChange={e => { const val = e.target.value; const ts = val ? new Date(val).getTime() : Date.now(); if (Number.isFinite(ts)) setFormData({...formData, date: ts}); }} />
                 </div>
               </div>
 
@@ -233,3 +244,4 @@ const PaymentList: React.FC<PaymentListProps> = ({
 };
 
 export default PaymentList;
+

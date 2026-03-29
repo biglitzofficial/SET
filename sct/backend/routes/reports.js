@@ -32,30 +32,21 @@ router.get('/dashboard', authenticate, async (req, res) => {
       return acc;
     }, settings.openingBalances?.CASH || 0);
 
-    let bankCUB = 0;
-    let bankKVB = 0;
-
-    const cubAccount = bankAccounts.find(b => b.id === 'CUB');
-    if (cubAccount) {
-      bankCUB = payments.reduce((acc, p) => {
-        if (p.mode === 'CUB') return p.type === 'IN' ? acc + p.amount : acc - p.amount;
-        if (p.voucherType === 'CONTRA' && p.targetMode === 'CUB') return acc + p.amount;
+    const bankBalances = {};
+    for (const bank of bankAccounts.filter(b => b.status !== 'ARCHIVED')) {
+      let bal = payments.reduce((acc, p) => {
+        if (p.mode === bank.name) return p.type === 'IN' ? acc + p.amount : acc - p.amount;
+        if (p.voucherType === 'CONTRA' && p.targetMode === bank.name) return acc + p.amount;
         return acc;
-      }, cubAccount.openingBalance);
+      }, bank.openingBalance);
+      bankBalances[bank.name] = bal;
     }
-
-    const kvbAccount = bankAccounts.find(b => b.id === 'KVB');
-    if (kvbAccount) {
-      bankKVB = payments.reduce((acc, p) => {
-        if (p.mode === 'KVB') return p.type === 'IN' ? acc + p.amount : acc - p.amount;
-        if (p.voucherType === 'CONTRA' && p.targetMode === 'KVB') return acc + p.amount;
-        return acc;
-      }, kvbAccount.openingBalance);
-    }
+    const bankCUB = bankBalances['CUB'] ?? 0;
+    const bankKVB = bankBalances['KVB'] ?? 0;
 
     const customerBalances = customers.map(cust => {
       const totalInvoiced = invoices.filter(inv => inv.customerId === cust.id).reduce((acc, inv) => acc + inv.amount, 0);
-      const totalPaid = payments.filter(p => p.sourceId === cust.id && p.type === 'IN' && p.category !== 'PRINCIPAL_RECOVERY').reduce((acc, p) => acc + p.amount, 0);
+      const totalPaid = payments.filter(p => p.sourceId === cust.id && p.type === 'IN' && p.category !== 'PRINCIPAL_RECOVERY' && p.category !== 'LOAN_TAKEN').reduce((acc, p) => acc + p.amount, 0);
       return totalInvoiced - totalPaid;
     });
 
@@ -100,6 +91,7 @@ router.get('/dashboard', authenticate, async (req, res) => {
       cashInHand,
       bankCUB,
       bankKVB,
+      bankBalances,
       receivableOutstanding,
       payableOutstanding,
       royaltyIncomeMonth,

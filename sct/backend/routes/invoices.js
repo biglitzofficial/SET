@@ -1,7 +1,7 @@
 import express from 'express';
 import { body, validationResult } from 'express-validator';
 import { db, COLLECTIONS } from '../config/firebase.js';
-import { authenticate, checkPermission } from '../middleware/auth.js';
+import { authenticate, checkPermission, assertStaffCanEditOrDelete, isRecordFromToday } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -65,7 +65,7 @@ router.post('/', [
   authenticate,
   checkPermission('canEdit'),
   body('customerName').notEmpty().trim(),
-  body('type').isIn(['ROYALTY', 'INTEREST', 'CHIT', 'INTEREST_OUT']),
+  body('type').isIn(['ROYALTY', 'INTEREST', 'CHIT', 'INTEREST_OUT', 'GENERAL']),
   body('amount').isFloat({ min: 0 }),
   body('date').isInt()
 ], async (req, res) => {
@@ -137,6 +137,8 @@ router.put('/:id', [
     if (!doc.exists) {
       return res.status(404).json({ error: { message: 'Invoice not found' } });
     }
+    const err = assertStaffCanEditOrDelete(req, doc.data(), 'edit');
+    if (err) return res.status(err.status).json({ error: { message: err.message } });
 
     const updateData = {
       ...req.body,
@@ -182,6 +184,8 @@ router.post('/:id/void', [
     if (!doc.exists) {
       return res.status(404).json({ error: { message: 'Invoice not found' } });
     }
+    const voidErr = assertStaffCanEditOrDelete(req, doc.data(), 'delete');
+    if (voidErr) return res.status(voidErr.status).json({ error: { message: voidErr.message } });
 
     await docRef.update({
       isVoid: true,
@@ -260,6 +264,15 @@ router.post('/bulk-delete', [
       return res.status(400).json({ error: { message: 'No IDs provided' } });
     }
 
+    if (req.user.role !== 'OWNER') {
+      for (const id of ids) {
+        const doc = await db.collection(COLLECTIONS.INVOICES).doc(id).get();
+        if (doc.exists && !isRecordFromToday(doc.data())) {
+          return res.status(403).json({ error: { message: 'Staff can only delete entries dated today. One or more invoices in this batch are from a different date.' } });
+        }
+      }
+    }
+
     // Firestore batch max is 500; chunk if needed
     const chunkSize = 500;
     for (let i = 0; i < ids.length; i += chunkSize) {
@@ -300,6 +313,8 @@ router.delete('/:id', [
     if (!doc.exists) {
       return res.status(404).json({ error: { message: 'Invoice not found' } });
     }
+    const delErr = assertStaffCanEditOrDelete(req, doc.data(), 'delete');
+    if (delErr) return res.status(delErr.status).json({ error: { message: delErr.message } });
 
     await docRef.delete();
 

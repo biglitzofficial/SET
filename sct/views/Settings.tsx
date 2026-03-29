@@ -23,12 +23,14 @@ interface SettingsProps {
   setLiabilities?: React.Dispatch<React.SetStateAction<Liability[]>>;
   investments?: Investment[];
   setInvestments?: React.Dispatch<React.SetStateAction<Investment[]>>;
-  openingBalances: { CASH: number; CUB: number; KVB: number; CAPITAL: number; };
+  openingBalances: { CASH: number; CUB: number; KVB: number; CAPITAL: number; RETAINED_EARNINGS?: number };
   setOpeningBalances: React.Dispatch<React.SetStateAction<{ CASH: number; CUB: number; KVB: number; CAPITAL: number; }>>;
   auditLogs: AuditLog[];
   setAuditLogs?: React.Dispatch<React.SetStateAction<AuditLog[]>>;
   otherBusinesses?: string[];
   setOtherBusinesses?: React.Dispatch<React.SetStateAction<string[]>>;
+  businessUnitInvestments?: Record<string, number>;
+  setBusinessUnitInvestments?: React.Dispatch<React.SetStateAction<Record<string, number>>>;
   incomeCategories?: string[];
   setIncomeCategories?: React.Dispatch<React.SetStateAction<string[]>>;
   bankAccounts?: BankAccount[];
@@ -49,6 +51,7 @@ const Settings: React.FC<SettingsProps> = ({
   openingBalances, setOpeningBalances,
   auditLogs, setAuditLogs,
   otherBusinesses = [], setOtherBusinesses,
+  businessUnitInvestments = {}, setBusinessUnitInvestments,
   incomeCategories = [], setIncomeCategories,
   bankAccounts = [], setBankAccounts,
   currentUser
@@ -63,10 +66,19 @@ const Settings: React.FC<SettingsProps> = ({
   // Audit Filter State
   const [auditFilter, setAuditFilter] = useState<'ALL' | 'CREATE' | 'EDIT' | 'DELETE' | 'VOID' | 'LOGIN' | 'LOGOUT'>('ALL');
   
+  // Banking config save confirmation
+  const [showBankingConfirmModal, setShowBankingConfirmModal] = useState(false);
+  const [bankingSaveSuccess, setBankingSaveSuccess] = useState(false);
+
+  // Category delete confirmation (expense / income)
+  const [categoryToDelete, setCategoryToDelete] = useState<{ type: 'expense' | 'income'; name: string } | null>(null);
+  const [categoryDeleteConfirmation, setCategoryDeleteConfirmation] = useState('');
+  
   // Temporary Banking Configuration State (shows current actual values for editing)
   const [tempBankingConfig, setTempBankingConfig] = useState({
     cash: openingBalances.CASH,
     capital: openingBalances.CAPITAL,
+    retainedEarnings: openingBalances.RETAINED_EARNINGS ?? 0,
     banks: bankAccounts
   });
   
@@ -75,9 +87,10 @@ const Settings: React.FC<SettingsProps> = ({
     setTempBankingConfig({
       cash: openingBalances.CASH,
       capital: openingBalances.CAPITAL,
+      retainedEarnings: openingBalances.RETAINED_EARNINGS ?? 0,
       banks: bankAccounts
     });
-  }, [openingBalances.CASH, openingBalances.CAPITAL, bankAccounts]);
+  }, [openingBalances.CASH, openingBalances.CAPITAL, openingBalances.RETAINED_EARNINGS, bankAccounts]);
   
   // Auto-save settings to backend when categories change
   useEffect(() => {
@@ -87,6 +100,7 @@ const Settings: React.FC<SettingsProps> = ({
           expenseCategories,
           savingCategories,
           otherBusinesses,
+          businessUnitInvestments,
           incomeCategories,
           bankAccounts
         });
@@ -98,7 +112,7 @@ const Settings: React.FC<SettingsProps> = ({
     // Debounce to avoid too many API calls
     const timeoutId = setTimeout(saveSettings, 500);
     return () => clearTimeout(timeoutId);
-  }, [expenseCategories, savingCategories, otherBusinesses, incomeCategories, bankAccounts]);
+  }, [expenseCategories, savingCategories, otherBusinesses, businessUnitInvestments, incomeCategories, bankAccounts]);
   
   // STAFF STATE
   const [showStaffForm, setShowStaffForm] = useState(false);
@@ -238,18 +252,37 @@ const Settings: React.FC<SettingsProps> = ({
   };
   
   // Save banking configuration (REPLACE actual values with temp values)
-  const handleSaveBankingConfig = () => {
-    // Replace opening balances with temp values
-    setOpeningBalances({
+  const handleSaveBankingConfig = async () => {
+    const newOpeningBalances = {
       ...openingBalances,
       CASH: tempBankingConfig.cash,
-      CAPITAL: tempBankingConfig.capital
-    });
-    
-    // Replace bank accounts with temp values
+      CAPITAL: tempBankingConfig.capital,
+      RETAINED_EARNINGS: tempBankingConfig.retainedEarnings
+    };
+    // Add each bank's opening balance by name
+    for (const b of tempBankingConfig.banks) {
+      (newOpeningBalances as Record<string, number>)[b.name] = b.openingBalance;
+    }
+
+    setOpeningBalances(newOpeningBalances);
     if (setBankAccounts) {
       setBankAccounts(tempBankingConfig.banks);
     }
+
+    try {
+      await settingsAPI.update({
+        openingBalances: newOpeningBalances,
+        bankAccounts: tempBankingConfig.banks
+      });
+    } catch (error) {
+      console.error('Failed to persist banking config:', error);
+    }
+    setBankingSaveSuccess(true);
+  };
+
+  const handleBankingOkayClick = () => {
+    setBankingSaveSuccess(false);
+    setShowBankingConfirmModal(true);
   };
 
   // --- FULL EXPORT / IMPORT LOGIC ---
@@ -263,7 +296,7 @@ const Settings: React.FC<SettingsProps> = ({
       },
       data: {
         customers, invoices, payments, liabilities, chitGroups, investments, staffUsers,
-        expenseCategories, savingCategories, otherBusinesses, incomeCategories, openingBalances, auditLogs, bankAccounts
+        expenseCategories, savingCategories, otherBusinesses, businessUnitInvestments, incomeCategories, openingBalances, auditLogs, bankAccounts
       }
     };
 
@@ -299,6 +332,7 @@ const Settings: React.FC<SettingsProps> = ({
            if (d.expenseCategories) setExpenseCategories(d.expenseCategories);
            if (d.savingCategories) setSavingCategories(d.savingCategories);
            if (d.otherBusinesses && setOtherBusinesses) setOtherBusinesses(d.otherBusinesses);
+           if (d.businessUnitInvestments && setBusinessUnitInvestments) setBusinessUnitInvestments(d.businessUnitInvestments);
            if (d.incomeCategories && setIncomeCategories) setIncomeCategories(d.incomeCategories);
            if (d.openingBalances) setOpeningBalances(d.openingBalances);
            if (d.auditLogs && setAuditLogs) setAuditLogs(d.auditLogs);
@@ -699,7 +733,7 @@ const Settings: React.FC<SettingsProps> = ({
 
       {/* 2. FINANCE CONFIG (OPENING BALANCES & BANKS) */}
       {activeTab === 'FINANCE' && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch">
            
            {/* BANK ACCOUNTS SECTION */}
            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
@@ -742,24 +776,30 @@ const Settings: React.FC<SettingsProps> = ({
                     <label className="block text-[10px] font-black text-emerald-600 uppercase tracking-widest mb-1">Owner's Capital</label>
                     <input type="number" className="w-full bg-emerald-50 border border-emerald-100 rounded-lg px-3 py-1.5 font-bold text-sm text-emerald-700 outline-none focus:border-emerald-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={tempBankingConfig.capital} onChange={e => setTempBankingConfig({...tempBankingConfig, capital: Number(e.target.value)})} />
                  </div>
+                 <div className="pt-3 border-t border-slate-100">
+                    <label className="block text-[10px] font-black text-indigo-600 uppercase tracking-widest mb-1">Opening Retained Earnings</label>
+                    <input type="number" className="w-full bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-1.5 font-bold text-sm text-indigo-700 outline-none focus:border-indigo-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={tempBankingConfig.retainedEarnings} onChange={e => setTempBankingConfig({...tempBankingConfig, retainedEarnings: Number(e.target.value)})} placeholder="0" />
+                    <p className="text-[9px] text-slate-400 mt-0.5">Prior period closing retained earnings</p>
+                 </div>
                  
                  {/* Okay Button to Save Banking Configuration */}
                  <div className="pt-3">
-                    <button onClick={handleSaveBankingConfig} className="w-full bg-indigo-600 text-white py-2 px-4 rounded-lg font-black text-sm uppercase tracking-widest hover:bg-indigo-700 transition-colors shadow-sm">
+                    <button onClick={handleBankingOkayClick} className="w-full bg-indigo-600 text-white py-2 px-4 rounded-lg font-black text-sm uppercase tracking-widest hover:bg-indigo-700 transition-colors shadow-sm">
                        <i className="fas fa-check mr-2"></i>Okay
                     </button>
                  </div>
               </div>
            </div>
 
-           {/* EXPENSE CATEGORIES */}
-           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm h-fit">
+           {/* Right column: Expense + Direct Income - aligned with Banking */}
+           <div className="flex flex-col gap-4">
+           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex-1">
               <h3 className="text-sm font-display font-black text-slate-900 uppercase italic tracking-tighter mb-3">Expense Categories</h3>
               <div className="flex flex-wrap gap-2 mb-3">
                  {expenseCategories.filter(cat => cat && cat.trim()).map(cat => (
                     <span key={cat} className="bg-slate-100 text-slate-600 px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest flex items-center gap-2">
                        {cat}
-                       <button onClick={() => setExpenseCategories(prev => prev.filter(c => c !== cat))} className="hover:text-rose-500"><i className="fas fa-times"></i></button>
+                       <button onClick={() => { setCategoryToDelete({ type: 'expense', name: cat }); setCategoryDeleteConfirmation(''); }} className="hover:text-rose-500" title="Remove category"><i className="fas fa-times"></i></button>
                     </span>
                  ))}
               </div>
@@ -803,62 +843,7 @@ const Settings: React.FC<SettingsProps> = ({
               </div>
            </div>
 
-           {/* BUSINESS UNITS (Formerly Income Categories) */}
-           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm h-fit">
-              <h3 className="text-sm font-display font-black text-slate-900 uppercase italic tracking-tighter mb-1">Business Units</h3>
-              <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-3">Other operational divisions</p>
-              
-              <div className="flex flex-wrap gap-2 mb-3">
-                 {(otherBusinesses || []).filter(biz => biz && biz.trim()).map(biz => (
-                    <span key={biz} className="bg-blue-50 text-blue-700 px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest flex items-center gap-2">
-                       {biz}
-                       <button onClick={() => setOtherBusinesses?.(prev => prev.filter(b => b !== biz))} className="hover:text-blue-900"><i className="fas fa-times"></i></button>
-                    </span>
-                 ))}
-                 {(otherBusinesses || []).filter(biz => biz && biz.trim()).length === 0 && <span className="text-xs text-slate-400 italic">No business units added.</span>}
-              </div>
-              <div className="flex gap-2">
-                 <input 
-                   id="newBiz" 
-                   type="text" 
-                   placeholder="NEW UNIT (e.g. TRANSPORT)" 
-                   className="flex-1 bg-slate-50 border border-slate-100 rounded-lg px-3 py-1.5 text-xs font-black uppercase outline-none focus:border-blue-500"
-                   onKeyDown={(e) => {
-                     if (e.key === 'Enter') {
-                       e.preventDefault();
-                       const input = e.currentTarget;
-                       const value = input.value.trim().toUpperCase();
-                       if(value && setOtherBusinesses && !(otherBusinesses || []).includes(value)) { 
-                         setOtherBusinesses(prev => [...prev, value]); 
-                         input.value = ''; 
-                       } else if ((otherBusinesses || []).includes(value)) {
-                         alert('This business unit already exists!');
-                       }
-                     }
-                   }}
-                 />
-                 <button 
-                   onClick={() => {
-                      const input = document.getElementById('newBiz') as HTMLInputElement;
-                      const value = input.value.trim().toUpperCase();
-                      if(value && setOtherBusinesses) {
-                        if(!(otherBusinesses || []).includes(value)) {
-                          setOtherBusinesses(prev => [...prev, value]); 
-                          input.value = '';
-                        } else {
-                          alert('This business unit already exists!');
-                        }
-                      }
-                   }}
-                   className="bg-blue-600 text-white px-4 rounded-lg font-black text-xs uppercase hover:bg-blue-700"
-                 >
-                    Add
-                 </button>
-              </div>
-           </div>
-
-           {/* DIRECT INCOME CATEGORIES (New) */}
-           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm h-fit">
+           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex-1">
               <h3 className="text-sm font-display font-black text-slate-900 uppercase italic tracking-tighter mb-1">Direct Income Categories</h3>
               <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-3">Salary, Commissions, Incentives</p>
               
@@ -866,7 +851,7 @@ const Settings: React.FC<SettingsProps> = ({
                  {(incomeCategories || []).filter(inc => inc && inc.trim()).map(inc => (
                     <span key={inc} className="bg-emerald-50 text-emerald-700 px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest flex items-center gap-2">
                        {inc}
-                       <button onClick={() => setIncomeCategories?.(prev => prev.filter(i => i !== inc))} className="hover:text-emerald-900"><i className="fas fa-times"></i></button>
+                       <button onClick={() => { setCategoryToDelete({ type: 'income', name: inc }); setCategoryDeleteConfirmation(''); }} className="hover:text-emerald-900" title="Remove category"><i className="fas fa-times"></i></button>
                     </span>
                  ))}
                  {(incomeCategories || []).filter(inc => inc && inc.trim()).length === 0 && <span className="text-xs text-slate-400 italic">No income categories defined.</span>}
@@ -909,6 +894,7 @@ const Settings: React.FC<SettingsProps> = ({
                     Add
                  </button>
               </div>
+           </div>
            </div>
 
         </div>
@@ -1396,6 +1382,111 @@ const Settings: React.FC<SettingsProps> = ({
               )}
             </div>
           )}
+        </div>
+      )}
+
+      {/* CATEGORY DELETE CONFIRMATION MODAL */}
+      {categoryToDelete && (
+        <div className="fixed inset-0 bg-amber-900/95 flex items-center justify-center z-[110] p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-md overflow-hidden animate-scaleUp">
+            <div className={`p-8 border-b flex justify-between items-start ${categoryToDelete.type === 'expense' ? 'border-rose-100 bg-rose-50' : 'border-emerald-100 bg-emerald-50'}`}>
+              <div>
+                <h3 className="text-xl font-display font-black text-slate-900 uppercase italic tracking-tighter">⚠️ Remove Category?</h3>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">System config change requires confirmation</p>
+              </div>
+              <button onClick={() => { setCategoryToDelete(null); setCategoryDeleteConfirmation(''); }} className="text-slate-400 hover:text-slate-600">
+                <i className="fas fa-times text-xl"></i>
+              </button>
+            </div>
+            <div className="p-8 space-y-6">
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
+                <p className="text-sm text-slate-700">You are about to remove this {categoryToDelete.type} category:</p>
+                <p className="text-lg font-black text-slate-800 mt-1">{categoryToDelete.name}</p>
+              </div>
+              <div>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">
+                  Type <span className="text-rose-600 font-black">{categoryToDelete.name}</span> to confirm
+                </label>
+                <input
+                  type="text"
+                  value={categoryDeleteConfirmation}
+                  onChange={e => setCategoryDeleteConfirmation(e.target.value)}
+                  placeholder="Type category name..."
+                  className="w-full border-2 border-slate-200 rounded-xl px-4 py-3 text-sm font-bold bg-slate-50 outline-none focus:border-rose-500 uppercase"
+                />
+              </div>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => { setCategoryToDelete(null); setCategoryDeleteConfirmation(''); }}
+                  className="flex-1 py-3 text-slate-600 font-black uppercase text-xs tracking-widest hover:bg-slate-100 rounded-xl transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    if (categoryDeleteConfirmation.trim().toUpperCase() === categoryToDelete.name) {
+                      if (categoryToDelete.type === 'expense') setExpenseCategories(prev => prev.filter(c => c !== categoryToDelete.name));
+                      if (categoryToDelete.type === 'income' && setIncomeCategories) setIncomeCategories(prev => prev.filter(i => i !== categoryToDelete.name));
+                      setCategoryToDelete(null);
+                      setCategoryDeleteConfirmation('');
+                    }
+                  }}
+                  disabled={categoryDeleteConfirmation.trim().toUpperCase() !== categoryToDelete.name}
+                  className="flex-1 py-3 bg-rose-600 text-white font-black uppercase text-xs tracking-widest rounded-xl hover:bg-rose-700 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transition"
+                >
+                  <i className="fas fa-trash-alt mr-2"></i>Remove
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* BANKING CONFIG SAVE CONFIRMATION MODAL */}
+      {showBankingConfirmModal && (
+        <div className="fixed inset-0 bg-indigo-900 bg-opacity-95 flex items-center justify-center z-[110] p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-md animate-scaleUp overflow-hidden">
+            {!bankingSaveSuccess ? (
+              <>
+                <div className="p-8 border-b border-indigo-100 bg-indigo-50 flex justify-between items-start">
+                  <div>
+                    <h3 className="text-xl font-display font-black text-indigo-900 uppercase italic tracking-tighter">Save Banking Configuration?</h3>
+                    <p className="text-[10px] font-black text-indigo-400 uppercase tracking-widest mt-1">This will update opening balances & bank accounts</p>
+                  </div>
+                  <button onClick={() => setShowBankingConfirmModal(false)} className="text-indigo-400 hover:text-indigo-600">
+                    <i className="fas fa-times text-xl"></i>
+                  </button>
+                </div>
+                <div className="p-8 space-y-6">
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 text-sm">
+                    <p className="text-slate-600 mb-2"><strong>Cash Drawer:</strong> {tempBankingConfig.cash}</p>
+                    {tempBankingConfig.banks.map((b, i) => (
+                      <p key={i} className="text-slate-600"><strong>{b.name}:</strong> {b.openingBalance}</p>
+                    ))}
+                    <p className="text-emerald-600 mt-1"><strong>Owner&apos;s Capital:</strong> {tempBankingConfig.capital}</p>
+                    <p className="text-blue-600"><strong>Retained Earnings:</strong> {tempBankingConfig.retainedEarnings}</p>
+                  </div>
+                  <div className="flex gap-3">
+                    <button onClick={() => setShowBankingConfirmModal(false)} className="flex-1 py-3 text-slate-600 font-black uppercase text-xs tracking-widest hover:bg-slate-100 rounded-xl transition">Cancel</button>
+                    <button onClick={handleSaveBankingConfig} className="flex-1 py-3 bg-indigo-600 text-white font-black uppercase text-xs tracking-widest rounded-xl hover:bg-indigo-700 shadow-lg transition">
+                      <i className="fas fa-check mr-2"></i>Save
+                    </button>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="p-8 text-center">
+                <div className="w-14 h-14 rounded-full bg-emerald-100 flex items-center justify-center mx-auto mb-4">
+                  <i className="fas fa-check text-2xl text-emerald-600"></i>
+                </div>
+                <h3 className="text-xl font-display font-black text-slate-900 mb-2">Saved successfully!</h3>
+                <p className="text-sm text-slate-500 mb-6">Banking configuration has been updated.</p>
+                <button onClick={() => { setShowBankingConfirmModal(false); setBankingSaveSuccess(false); }} className="w-full py-3 bg-indigo-600 text-white font-black uppercase text-xs tracking-widest rounded-xl hover:bg-indigo-700">
+                  Close
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       )}
 

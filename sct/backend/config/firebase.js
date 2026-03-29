@@ -86,7 +86,8 @@ export const COLLECTIONS = {
   AUDIT_LOGS: 'auditLogs',
   SETTINGS: 'settings',
   BANK_ACCOUNTS: 'bankAccounts',
-  DUE_DATES: 'dueDates'
+  DUE_DATES: 'dueDates',
+  JOURNALS: 'journals'
 };
 
 export { admin, db };

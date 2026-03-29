@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { DashboardStats, Invoice, Payment, UserRole, Customer, Liability, BankAccount } from '../types';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
 import OutstandingReports from './OutstandingReports';
+import { computeOpening, sumPaymentsInForLedger } from '../utils/ledgerUtils';
 
 interface DashboardProps {
   stats: DashboardStats;
@@ -22,7 +23,6 @@ interface DashboardProps {
 
 const Dashboard: React.FC<DashboardProps> = ({ stats, customers, role, invoices, payments, liabilities, openingBalances, bankAccounts, expenseCategories, otherBusinesses, incomeCategories }) => {
   const navigate = useNavigate();
-  const [showBalances, setShowBalances] = useState(false);
   const formatCurrency = (val: number) => `${Math.abs(val || 0).toFixed(2)} INR`;
   
   // Debug: Log when Dashboard mounts and when payments change
@@ -33,10 +33,6 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, customers, role, invoices,
     }
   }, [payments]);
   
-  // Calculate total bank balance
-  const totalBankBalance = useMemo(() => {
-    return bankAccounts.filter(b => b.status === 'ACTIVE').reduce((sum, bank) => sum + bank.openingBalance, 0);
-  }, [bankAccounts]);
 
   // --- Real-time Projections ---
   const projections = useMemo(() => {
@@ -49,38 +45,93 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, customers, role, invoices,
     const totalAssets = stats.cashInHand + stats.bankCUB + stats.bankKVB + stats.receivableOutstanding + stats.totalInvestments;
     const netWorth = totalAssets - stats.payableOutstanding;
 
-    // Calculate category-wise receivables and payables with member counts
-    const royaltyReceivableInvoices = invoices.filter(i => i.type === 'ROYALTY' && i.status === 'UNPAID' && i.direction === 'IN');
-    const royaltyReceivable = royaltyReceivableInvoices.reduce((acc, i) => acc + i.balance, 0);
-    const royaltyReceivableCount = new Set(royaltyReceivableInvoices.map(i => i.customerId)).size;
-    
-    const royaltyPayableInvoices = invoices.filter(i => i.type === 'ROYALTY' && i.status === 'UNPAID' && i.direction === 'OUT');
-    const royaltyPayable = royaltyPayableInvoices.reduce((acc, i) => acc + i.balance, 0);
-    const royaltyPayableCount = new Set(royaltyPayableInvoices.map(i => i.customerId)).size;
-    
-    const loanReceivableInvoices = invoices.filter(i => i.type === 'INTEREST' && i.status === 'UNPAID' && i.direction === 'IN');
-    const loanReceivable = loanReceivableInvoices.reduce((acc, i) => acc + i.balance, 0);
-    const loanReceivableCount = new Set(loanReceivableInvoices.map(i => i.customerId)).size;
-    
-    const loanPayableInvoices = invoices.filter(i => i.type === 'INTEREST_OUT' && i.status === 'UNPAID' && i.direction === 'OUT');
-    const loanPayable = loanPayableInvoices.reduce((acc, i) => acc + i.balance, 0);
-    const loanPayableCount = new Set(loanPayableInvoices.map(i => i.customerId)).size;
-    
-    const chitReceivableInvoices = invoices.filter(i => i.type === 'CHIT' && i.status === 'UNPAID' && i.direction === 'IN');
-    const chitReceivable = chitReceivableInvoices.reduce((acc, i) => acc + i.balance, 0);
-    const chitReceivableCount = new Set(chitReceivableInvoices.map(i => i.customerId)).size;
-    
-    const chitPayableInvoices = invoices.filter(i => i.type === 'CHIT' && i.status === 'UNPAID' && i.direction === 'OUT');
-    const chitPayable = chitPayableInvoices.reduce((acc, i) => acc + i.balance, 0);
-    const chitPayableCount = new Set(chitPayableInvoices.map(i => i.customerId)).size;
-    
-    const generalReceivableInvoices = invoices.filter(i => !['ROYALTY', 'INTEREST', 'CHIT'].includes(i.type) && i.status === 'UNPAID' && i.direction === 'IN');
-    const generalReceivable = generalReceivableInvoices.reduce((acc, i) => acc + i.balance, 0);
-    const generalReceivableCount = new Set(generalReceivableInvoices.map(i => i.customerId)).size;
-    
-    const generalPayableInvoices = invoices.filter(i => !['ROYALTY', 'INTEREST_OUT', 'CHIT'].includes(i.type) && i.status === 'UNPAID' && i.direction === 'OUT');
-    const generalPayable = generalPayableInvoices.reduce((acc, i) => acc + i.balance, 0);
-    const generalPayableCount = new Set(generalPayableInvoices.map(i => i.customerId)).size;
+    // --- Category-wise Receivables & Payables ---
+    // Uses the exact same payment-based formula as OutstandingReports so numbers always match
+
+    // Build per-customer breakdown (mirrors customerAnalysis in OutstandingReports)
+    const custAnalysis = customers.map(cust => {
+      const custInv = invoices.filter(i => i.customerId === cust.id && !i.isVoid);
+      const custPay = payments.filter(p => p.sourceId === cust.id);
+
+      const opening = computeOpening(cust);
+      const invIN  = custInv.filter(i => i.direction === 'IN').reduce((s, i) => s + i.amount, 0);
+      const invOUT = custInv.filter(i => i.direction === 'OUT').reduce((s, i) => s + i.amount, 0);
+      const payIN  = sumPaymentsInForLedger(custPay);
+      const payOUT = custPay.filter(p => p.type === 'OUT').reduce((s, p) => s + p.amount, 0);
+      const netLedger = (opening + invIN + payOUT) - (invOUT + payIN);
+
+      const chitInAmt  = custInv.filter(i => i.type === 'CHIT' && i.direction === 'IN').reduce((s, i) => s + i.amount, 0);
+      const chitOutAmt = custInv.filter(i => i.type === 'CHIT' && i.direction === 'OUT').reduce((s, i) => s + i.amount, 0);
+      const chitPaidIn  = custPay.filter(p => p.type === 'IN'  && (p.category === 'CHIT' || p.category === 'CHIT_FUND')).reduce((s, p) => s + p.amount, 0);
+      const chitPaidOut = custPay.filter(p => p.type === 'OUT' && (p.category === 'CHIT' || p.category === 'CHIT_FUND')).reduce((s, p) => s + p.amount, 0);
+      const chitNet = (chitInAmt + chitPaidOut) - (chitOutAmt + chitPaidIn);
+
+      const royaltyAmt  = custInv.filter(i => i.type === 'ROYALTY').reduce((s, i) => s + i.amount, 0);
+      const royaltyPaid = custPay.filter(p => p.type === 'IN' && p.category === 'ROYALTY').reduce((s, p) => s + p.amount, 0);
+      const royaltyNet  = royaltyAmt - royaltyPaid;
+
+      const interestAmt  = custInv.filter(i => i.type === 'INTEREST').reduce((s, i) => s + i.amount, 0);
+      const interestPaid = custPay.filter(p => p.type === 'IN' && p.category === 'INTEREST').reduce((s, p) => s + p.amount, 0);
+      const interestNet  = interestAmt - interestPaid;
+
+      const interestOutAmt  = custInv.filter(i => i.type === 'INTEREST_OUT' && !i.isVoid).reduce((s, i) => s + i.amount, 0);
+      const interestOutPaid = custPay.filter(p => p.type === 'OUT' && p.category === 'LOAN_INTEREST').reduce((s, p) => s + p.amount, 0);
+      const interestOutNet  = Math.max(0, interestOutAmt - interestOutPaid);
+
+      const generalNet = netLedger - chitNet - royaltyNet - interestNet - interestOutNet - (cust.interestPrincipal || 0) + (cust.creditPrincipal || 0);
+
+      return { ...cust, chitNet, royaltyNet, interestNet, interestOutNet, generalNet, netLedger, payOUT };
+    });
+
+    // RECEIVABLES: customers with positive category balance
+    const royaltyRec = custAnalysis.filter(c => c.royaltyNet > 0);
+    const royaltyReceivable = royaltyRec.reduce((s, c) => s + c.royaltyNet, 0);
+    const royaltyReceivableCount = royaltyRec.length;
+
+    const loanRec = custAnalysis.filter(c => c.interestNet > 0);
+    const loanReceivable = loanRec.reduce((s, c) => s + c.interestNet, 0);
+    const loanReceivableCount = loanRec.length;
+
+    const chitRec = custAnalysis.filter(c => c.chitNet > 0);
+    const chitReceivable = chitRec.reduce((s, c) => s + c.chitNet, 0);
+    const chitReceivableCount = chitRec.length;
+
+    // OTHER = General from Analytics Outstanding
+    // Receivable: customers with positive generalNet (same as before)
+    const generalRec = custAnalysis.filter(c => c.generalNet > 0);
+    const generalReceivable = generalRec.reduce((s, c) => s + c.generalNet, 0);
+    const generalReceivableCount = generalRec.length;
+
+    // GENERAL TRADE: customers we owe for general (generalNet < 0, not lenders)
+    const generalTradePayables = custAnalysis.filter(c => !c.isLender && c.generalNet < 0);
+    const generalPayable = generalTradePayables.reduce((s, c) => s + Math.abs(c.generalNet), 0);
+    const generalPayableCount = generalTradePayables.length;
+
+    // PAYABLES: mirrors Analytics Outstanding — Loan Payable = Interest Out total
+    const customerInterestOut = custAnalysis.reduce((s, c) => s + (c.interestOutNet || 0), 0);
+    const liabilityInterestOut = liabilities.reduce((s, l) => {
+      const amt = invoices.filter(i => i.lenderId === l.id && i.type === 'INTEREST_OUT' && !i.isVoid).reduce((a, i) => a + i.amount, 0);
+      const paid = payments.filter(p => p.sourceId === l.id && p.type === 'OUT' && p.category === 'LOAN_INTEREST').reduce((a, p) => a + p.amount, 0);
+      return s + Math.max(0, amt - paid);
+    }, 0);
+    const loanPayable = customerInterestOut + liabilityInterestOut;
+    const customersWithInterestOut = custAnalysis.filter(c => (c.interestOutNet || 0) > 0).length;
+    const lendersWithInterestOut = liabilities.filter(l => {
+      const amt = invoices.filter(i => i.lenderId === l.id && i.type === 'INTEREST_OUT' && !i.isVoid).reduce((a, i) => a + i.amount, 0);
+      const paid = payments.filter(p => p.sourceId === l.id && p.type === 'OUT' && p.category === 'LOAN_INTEREST').reduce((a, p) => a + p.amount, 0);
+      return amt - paid > 0;
+    }).length;
+    const loanPayableCount = customersWithInterestOut + lendersWithInterestOut;
+
+    // Chit winners we owe payout (negative chitNet customers)
+    const chitDebtors = custAnalysis.filter(c => c.chitNet < 0 && !c.isLender).map(c => {
+      return Math.max(0, Math.abs(c.chitNet) - c.payOUT);
+    });
+    const chitPayable = chitDebtors.reduce((s, v) => s + v, 0);
+    const chitPayableCount = chitDebtors.filter(v => v > 0).length;
+
+    const royaltyPayable = 0;
+    const royaltyPayableCount = 0;
 
     return { 
       royaltyCount, royaltyValue, interestCount, interestYield, netWorth,
@@ -89,7 +140,7 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, customers, role, invoices,
       chitReceivable, chitReceivableCount, chitPayable, chitPayableCount,
       generalReceivable, generalReceivableCount, generalPayable, generalPayableCount
     };
-  }, [customers, stats, invoices]);
+  }, [customers, stats, invoices, payments, liabilities]);
 
   // --- Expense Chart Data (by category) ---
   const expenseChartData = useMemo(() => {
@@ -167,171 +218,129 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, customers, role, invoices,
   }, [payments, otherBusinesses, incomeCategories]);
 
   return (
-    <div className="space-y-6 animate-fadeIn pb-10">
+    <div className="space-y-8 animate-fadeIn pb-12">
       {/* PAGE TITLE */}
       <div className="flex justify-between items-center">
          <div>
-            <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Overview</h1>
-            <p className="text-sm font-medium text-slate-400">Financial Snapshot & Key Metrics</p>
-         </div>
-         <div className="flex items-center gap-3">
-            {/* Wallet Balance Dropdown */}
-            <div className="relative">
-               <button 
-                  onClick={() => setShowBalances(!showBalances)}
-                  className="w-9 h-9 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center hover:bg-indigo-100 transition-colors shadow-sm"
-                  title="Quick Balances"
-               >
-                  <i className="fas fa-wallet text-sm"></i>
-               </button>
-               
-               {showBalances && (
-                  <>
-                     <div className="fixed inset-0 z-10" onClick={() => setShowBalances(false)} />
-                     <div className="absolute top-0 right-12 bg-white rounded-xl shadow-2xl border border-slate-200 z-20">
-                        <div className="flex items-stretch gap-2 p-2">
-                           {/* Cash Drawer */}
-                           <div className="bg-gradient-to-br from-emerald-50 to-emerald-100 rounded-lg px-3 py-2 border border-emerald-200 min-w-[120px]">
-                              <div className="flex items-center gap-1.5 mb-1">
-                                 <i className="fas fa-cash-register text-emerald-600 text-xs"></i>
-                                 <div className="text-[9px] font-black text-emerald-600 uppercase tracking-wider">Cash</div>
-                              </div>
-                              <div className="text-sm font-black text-emerald-800">₹{openingBalances.CASH.toLocaleString()}</div>
-                           </div>
-                           
-                           {/* Bank Accounts */}
-                           {bankAccounts.filter(b => b.status === 'ACTIVE').map((bank) => (
-                              <div key={bank.id} className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg px-3 py-2 border border-blue-200 min-w-[120px]">
-                                 <div className="flex items-center gap-1.5 mb-1">
-                                    <i className="fas fa-building-columns text-blue-600 text-xs"></i>
-                                    <div className="text-[9px] font-black text-blue-600 uppercase tracking-wider">{bank.name}</div>
-                                 </div>
-                                 <div className="text-sm font-black text-blue-800">₹{bank.openingBalance.toLocaleString()}</div>
-                              </div>
-                           ))}
-                           
-                           {/* Total Bank Balance */}
-                           <div className="bg-gradient-to-br from-indigo-50 to-indigo-100 rounded-lg px-3 py-2 border-2 border-indigo-300 min-w-[120px]">
-                              <div className="flex items-center gap-1.5 mb-1">
-                                 <i className="fas fa-chart-line text-indigo-600 text-xs"></i>
-                                 <div className="text-[9px] font-black text-indigo-600 uppercase tracking-wider">Total</div>
-                              </div>
-                              <div className="text-sm font-black text-indigo-900">₹{totalBankBalance.toLocaleString()}</div>
-                           </div>
-                        </div>
-                     </div>
-                  </>
-               )}
-            </div>
-            
-            <div className="hidden md:flex items-center gap-2 bg-white px-3 py-1.5 rounded-full border border-slate-200 shadow-sm">
-               <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
-               <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">Live Data</span>
-            </div>
+            <h1 className="text-3xl md:text-4xl font-display font-black text-slate-900 tracking-tighter italic">Overview</h1>
+            <p className="text-sm font-bold text-slate-500 uppercase tracking-widest mt-1">Financial Snapshot & Key Metrics</p>
          </div>
       </div>
 
       {/* BENTO GRID LAYOUT */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 md:gap-6 auto-rows-[minmax(140px,auto)]">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 md:gap-8 auto-rows-[minmax(140px,auto)]">
         
         {/* 1. Outstanding Balances - Receivables & Payables Breakdown (Wide) */}
-        <div className="md:col-span-4 bg-white rounded-[2rem] p-8 shadow-soft border border-white/50">
-           <div className="flex justify-between items-center mb-6">
-              <h3 className="font-bold text-slate-800">Outstanding Balances</h3>
-              <div className="text-xs font-medium text-slate-400 bg-slate-50 px-2 py-1 rounded-lg">By Category</div>
+        <div className="md:col-span-4 bg-white rounded-[2.5rem] p-8 md:p-10 shadow-xl shadow-slate-200/50 border border-slate-100">
+           <div className="flex justify-between items-center mb-8">
+              <h3 className="text-xl font-display font-black text-slate-900 uppercase tracking-tighter italic">Outstanding Balances</h3>
+              <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest bg-slate-50/80 px-3 py-1.5 rounded-xl border border-slate-100">By Category</span>
            </div>
-           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+           <div className="grid grid-cols-2 md:grid-cols-4 gap-5">
               {/* ROYALTY */}
-              <div className="space-y-2">
-                <div onClick={() => navigate('/reports/outstanding?filter=royalty&tab=receivables')} className="p-3 bg-blue-50 rounded-2xl border border-blue-100 overflow-hidden cursor-pointer hover:shadow-lg hover:scale-105 transition-all duration-200">
-                   <div className="text-[10px] font-bold text-blue-400 uppercase mb-1 tracking-wider">ROYALTY</div>
-                   <div className="text-sm sm:text-base font-bold text-blue-900 whitespace-nowrap">
+              <div className="space-y-3">
+                <div onClick={() => navigate('/reports/outstanding?filter=royalty&tab=receivables')} className="group p-4 bg-gradient-to-br from-blue-50 to-indigo-50 rounded-2xl border border-blue-100/80 overflow-hidden cursor-pointer hover:shadow-lg hover:shadow-blue-200/30 hover:-translate-y-0.5 hover:border-blue-200 transition-all duration-300">
+                   <div className="flex items-center gap-2 mb-2">
+                     <i className="fas fa-crown text-blue-400 text-xs"></i>
+                     <span className="text-[10px] font-black text-blue-500 uppercase tracking-wider">Royalty</span>
+                   </div>
+                   <div className="text-base sm:text-lg font-display font-black text-blue-900 whitespace-nowrap tabular-nums">
                      {formatCurrency(projections.royaltyReceivable)}
                      {projections.royaltyReceivableCount > 0 && (
-                       <span className="text-xs text-blue-500 ml-1">/ {projections.royaltyReceivableCount}</span>
+                       <span className="text-xs font-bold text-blue-500 ml-1">/ {projections.royaltyReceivableCount}</span>
                      )}
                    </div>
-                   <div className="text-[9px] text-blue-400 uppercase tracking-widest mt-0.5">Receivable</div>
+                   <div className="text-[9px] font-black text-blue-400 uppercase tracking-widest mt-1">Receivable</div>
                 </div>
-                <div onClick={() => navigate('/reports/outstanding?filter=royalty&tab=payables')} className="p-3 bg-blue-50 rounded-2xl border border-blue-100 overflow-hidden cursor-pointer hover:shadow-lg hover:scale-105 transition-all duration-200">
-                   <div className="text-sm sm:text-base font-bold text-blue-900 whitespace-nowrap">
+                <div onClick={() => navigate('/reports/outstanding?filter=royalty&tab=payables')} className="group p-4 bg-gradient-to-br from-blue-50 to-indigo-50 rounded-2xl border border-blue-100/80 overflow-hidden cursor-pointer hover:shadow-lg hover:shadow-blue-200/30 hover:-translate-y-0.5 hover:border-blue-200 transition-all duration-300">
+                   <div className="text-base sm:text-lg font-display font-black text-blue-900 whitespace-nowrap tabular-nums">
                      {formatCurrency(projections.royaltyPayable)}
                      {projections.royaltyPayableCount > 0 && (
-                       <span className="text-xs text-blue-500 ml-1">/ {projections.royaltyPayableCount}</span>
+                       <span className="text-xs font-bold text-blue-500 ml-1">/ {projections.royaltyPayableCount}</span>
                      )}
                    </div>
-                   <div className="text-[9px] text-blue-400 uppercase tracking-widest">Payable</div>
+                   <div className="text-[9px] font-black text-blue-400 uppercase tracking-widest mt-1">Payable</div>
                 </div>
               </div>
 
               {/* LOAN */}
-              <div className="space-y-2">
-                <div onClick={() => navigate('/reports/outstanding?filter=interest&tab=receivables')} className="p-3 bg-slate-50 rounded-2xl border border-slate-200 overflow-hidden cursor-pointer hover:shadow-lg hover:scale-105 transition-all duration-200">
-                   <div className="text-[10px] font-bold text-slate-400 uppercase mb-1 tracking-wider">LOAN</div>
-                   <div className="text-sm sm:text-base font-bold text-slate-800 whitespace-nowrap">
+              <div className="space-y-3">
+                <div onClick={() => navigate('/reports/outstanding?filter=interest&tab=receivables')} className="group p-4 bg-gradient-to-br from-slate-50 to-zinc-100 rounded-2xl border border-slate-200/80 overflow-hidden cursor-pointer hover:shadow-lg hover:shadow-slate-200/30 hover:-translate-y-0.5 hover:border-slate-300 transition-all duration-300">
+                   <div className="flex items-center gap-2 mb-2">
+                     <i className="fas fa-hand-holding-usd text-slate-400 text-xs"></i>
+                     <span className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Loan</span>
+                   </div>
+                   <div className="text-base sm:text-lg font-display font-black text-slate-800 whitespace-nowrap tabular-nums">
                      {formatCurrency(projections.loanReceivable)}
                      {projections.loanReceivableCount > 0 && (
-                       <span className="text-xs text-slate-500 ml-1">/ {projections.loanReceivableCount}</span>
+                       <span className="text-xs font-bold text-slate-500 ml-1">/ {projections.loanReceivableCount}</span>
                      )}
                    </div>
-                   <div className="text-[9px] text-slate-400 uppercase tracking-widest mt-0.5">Receivable</div>
+                   <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mt-1">Receivable</div>
                 </div>
-                <div onClick={() => navigate('/reports/outstanding?tab=payables')} className="p-3 bg-slate-50 rounded-2xl border border-slate-200 overflow-hidden cursor-pointer hover:shadow-lg hover:scale-105 transition-all duration-200">
-                   <div className="text-sm sm:text-base font-bold text-slate-800 whitespace-nowrap">
+                <div onClick={() => navigate('/reports/outstanding?tab=payables')} className="group p-4 bg-gradient-to-br from-slate-50 to-zinc-100 rounded-2xl border border-slate-200/80 overflow-hidden cursor-pointer hover:shadow-lg hover:shadow-slate-200/30 hover:-translate-y-0.5 hover:border-slate-300 transition-all duration-300">
+                   <div className="text-base sm:text-lg font-display font-black text-slate-800 whitespace-nowrap tabular-nums">
                      {formatCurrency(projections.loanPayable)}
                      {projections.loanPayableCount > 0 && (
-                       <span className="text-xs text-slate-500 ml-1">/ {projections.loanPayableCount}</span>
+                       <span className="text-xs font-bold text-slate-500 ml-1">/ {projections.loanPayableCount}</span>
                      )}
                    </div>
-                   <div className="text-[9px] text-slate-400 uppercase tracking-widest">Payable</div>
+                   <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mt-1">Payable</div>
                 </div>
               </div>
 
               {/* CHIT */}
-              <div className="space-y-2">
-                <div onClick={() => navigate('/reports/outstanding?filter=chit&tab=receivables')} className="p-3 bg-orange-50 rounded-2xl border border-orange-100 overflow-hidden cursor-pointer hover:shadow-lg hover:scale-105 transition-all duration-200">
-                   <div className="text-[10px] font-bold text-orange-400 uppercase mb-1 tracking-wider">CHIT</div>
-                   <div className="text-sm sm:text-base font-bold text-orange-900 whitespace-nowrap">
+              <div className="space-y-3">
+                <div onClick={() => navigate('/reports/outstanding?filter=chit&tab=receivables')} className="group p-4 bg-gradient-to-br from-orange-50 to-amber-50 rounded-2xl border border-orange-100/80 overflow-hidden cursor-pointer hover:shadow-lg hover:shadow-orange-200/30 hover:-translate-y-0.5 hover:border-orange-200 transition-all duration-300">
+                   <div className="flex items-center gap-2 mb-2">
+                     <i className="fas fa-piggy-bank text-orange-400 text-xs"></i>
+                     <span className="text-[10px] font-black text-orange-500 uppercase tracking-wider">Chit</span>
+                   </div>
+                   <div className="text-base sm:text-lg font-display font-black text-orange-900 whitespace-nowrap tabular-nums">
                      {formatCurrency(projections.chitReceivable)}
                      {projections.chitReceivableCount > 0 && (
-                       <span className="text-xs text-orange-500 ml-1">/ {projections.chitReceivableCount}</span>
+                       <span className="text-xs font-bold text-orange-500 ml-1">/ {projections.chitReceivableCount}</span>
                      )}
                    </div>
-                   <div className="text-[9px] text-orange-400 uppercase tracking-widest mt-0.5">Receivable</div>
+                   <div className="text-[9px] font-black text-orange-400 uppercase tracking-widest mt-1">Receivable</div>
                 </div>
-                <div onClick={() => navigate('/reports/outstanding?filter=chit&tab=payables')} className="p-3 bg-orange-50 rounded-2xl border border-orange-100 overflow-hidden cursor-pointer hover:shadow-lg hover:scale-105 transition-all duration-200">
-                   <div className="text-sm sm:text-base font-bold text-orange-900 whitespace-nowrap">
+                <div onClick={() => navigate('/reports/outstanding?filter=chit&tab=payables')} className="group p-4 bg-gradient-to-br from-orange-50 to-amber-50 rounded-2xl border border-orange-100/80 overflow-hidden cursor-pointer hover:shadow-lg hover:shadow-orange-200/30 hover:-translate-y-0.5 hover:border-orange-200 transition-all duration-300">
+                   <div className="text-base sm:text-lg font-display font-black text-orange-900 whitespace-nowrap tabular-nums">
                      {formatCurrency(projections.chitPayable)}
                      {projections.chitPayableCount > 0 && (
-                       <span className="text-xs text-orange-500 ml-1">/ {projections.chitPayableCount}</span>
+                       <span className="text-xs font-bold text-orange-500 ml-1">/ {projections.chitPayableCount}</span>
                      )}
                    </div>
-                   <div className="text-[9px] text-orange-400 uppercase tracking-widest">Payable</div>
+                   <div className="text-[9px] font-black text-orange-400 uppercase tracking-widest mt-1">Payable</div>
                 </div>
               </div>
 
               {/* GENERAL */}
-              <div className="space-y-2">
-                <div onClick={() => navigate('/reports/outstanding?filter=general&tab=receivables')} className="p-3 bg-amber-50 rounded-2xl border border-amber-100 overflow-hidden cursor-pointer hover:shadow-lg hover:scale-105 transition-all duration-200">
-                   <div className="text-[10px] font-bold text-amber-500 uppercase mb-1 tracking-wider">OTHER</div>
-                   <div className="text-sm sm:text-base font-bold text-amber-900 whitespace-nowrap">
+              <div className="space-y-3">
+                <div onClick={() => navigate('/reports/outstanding?filter=general&tab=receivables')} className="group p-4 bg-gradient-to-br from-amber-50 to-yellow-50 rounded-2xl border border-amber-100/80 overflow-hidden cursor-pointer hover:shadow-lg hover:shadow-amber-200/30 hover:-translate-y-0.5 hover:border-amber-200 transition-all duration-300">
+                   <div className="flex items-center gap-2 mb-2">
+                     <i className="fas fa-file-invoice-dollar text-amber-500 text-xs"></i>
+                     <span className="text-[10px] font-black text-amber-600 uppercase tracking-wider">General</span>
+                   </div>
+                   <div className="text-base sm:text-lg font-display font-black text-amber-900 whitespace-nowrap tabular-nums">
                      {formatCurrency(projections.generalReceivable)}
                      {projections.generalReceivableCount > 0 && (
-                       <span className="text-xs text-amber-500 ml-1">/ {projections.generalReceivableCount}</span>
+                       <span className="text-xs font-bold text-amber-600 ml-1">/ {projections.generalReceivableCount}</span>
                      )}
                    </div>
-                   <div className="text-[9px] text-amber-500 uppercase tracking-widest mt-0.5">Receivable</div>
+                   <div className="text-[9px] font-black text-amber-500 uppercase tracking-widest mt-1">Receivable</div>
                 </div>
-                <div onClick={() => navigate('/reports/outstanding?filter=general&tab=payables')} className="p-3 bg-amber-50 rounded-2xl border border-amber-100 overflow-hidden cursor-pointer hover:shadow-lg hover:scale-105 transition-all duration-200">
-                   <div className="text-sm sm:text-base font-bold text-amber-900 whitespace-nowrap">
+                <div onClick={() => navigate('/reports/outstanding?filter=general&tab=payables')} className="group p-4 bg-gradient-to-br from-amber-50 to-yellow-50 rounded-2xl border border-amber-100/80 overflow-hidden cursor-pointer hover:shadow-lg hover:shadow-amber-200/30 hover:-translate-y-0.5 hover:border-amber-200 transition-all duration-300">
+                   <div className="text-base sm:text-lg font-display font-black text-amber-900 whitespace-nowrap tabular-nums">
                      {formatCurrency(projections.generalPayable)}
                      {projections.generalPayableCount > 0 && (
-                       <span className="text-xs text-amber-500 ml-1">/ {projections.generalPayableCount}</span>
+                       <span className="text-xs font-bold text-amber-600 ml-1">/ {projections.generalPayableCount}</span>
                      )}
                    </div>
-                   <div className="text-[9px] text-amber-500 uppercase tracking-widest">Payable</div>
+                   <div className="text-[9px] font-black text-amber-500 uppercase tracking-widest mt-1">Payable <span className="opacity-80">(General Trade)</span></div>
                 </div>
               </div>
+
            </div>
         </div>
 
@@ -356,13 +365,16 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, customers, role, invoices,
       </div>
 
       {/* EXPENSE & INCOME TRACKING CHARTS */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 md:gap-8 mt-8">
         
         {/* Expense Breakdown Chart */}
-        <div className="bg-white rounded-[2rem] p-8 shadow-soft border border-white/50 relative">
-          <div className="mb-4">
-            <h3 className="text-lg font-bold text-slate-800">Expense Breakdown</h3>
-            <p className="text-xs text-slate-500 mt-1">Total expenses by category</p>
+        <div className="bg-white rounded-[2.5rem] p-8 md:p-10 shadow-xl shadow-slate-200/50 border border-slate-100 overflow-hidden">
+          <div className="mb-6">
+            <div className="flex items-center gap-2 mb-1">
+              <i className="fas fa-chart-pie text-rose-400 text-sm"></i>
+              <h3 className="text-xl font-display font-black text-slate-900 uppercase tracking-tighter italic">Expense Breakdown</h3>
+            </div>
+            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Total expenses by category</p>
           </div>
           
           {expenseChartData.length > 0 ? (
@@ -389,7 +401,7 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, customers, role, invoices,
                       boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
                       padding: '12px'
                     }}
-                    formatter={(value: number) => `₹${value.toLocaleString()}`}
+                    formatter={(value: number) => `${value.toLocaleString()}`}
                   />
                   <Legend 
                     verticalAlign="bottom" 
@@ -412,10 +424,13 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, customers, role, invoices,
         </div>
 
         {/* Income Breakdown Chart */}
-        <div className="bg-white rounded-[2rem] p-8 shadow-soft border border-white/50 relative">
-          <div className="mb-4">
-            <h3 className="text-lg font-bold text-slate-800">Income Breakdown</h3>
-            <p className="text-xs text-slate-500 mt-1">Revenue from business units & direct income</p>
+        <div className="bg-white rounded-[2.5rem] p-8 md:p-10 shadow-xl shadow-slate-200/50 border border-slate-100 overflow-hidden">
+          <div className="mb-6">
+            <div className="flex items-center gap-2 mb-1">
+              <i className="fas fa-coins text-emerald-400 text-sm"></i>
+              <h3 className="text-xl font-display font-black text-slate-900 uppercase tracking-tighter italic">Income Breakdown</h3>
+            </div>
+            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Revenue from business units & direct income</p>
           </div>
           
           {incomeChartData.length > 0 ? (
@@ -442,7 +457,7 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, customers, role, invoices,
                       boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
                       padding: '12px'
                     }}
-                    formatter={(value: number) => `₹${value.toLocaleString()}`}
+                    formatter={(value: number) => `${value.toLocaleString()}`}
                   />
                   <Legend 
                     verticalAlign="bottom" 
@@ -470,3 +485,4 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, customers, role, invoices,
 };
 
 export default Dashboard;
+

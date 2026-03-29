@@ -17,11 +17,12 @@ interface ReportCenterProps {
   stats: DashboardStats;
   role: UserRole;
   auditLogs: AuditLog[];
-  openingBalances: { CASH: number; CUB: number; KVB: number; CAPITAL: number; };
+  openingBalances: { CASH: number; CUB: number; KVB: number; CAPITAL: number; RETAINED_EARNINGS?: number };
   otherBusinesses: string[];
   investments: Investment[];
   bankAccounts?: BankAccount[];
   chitGroups: ChitGroup[];
+  journals?: import('../types').JournalEntry[];
 }
 
 // Internal Component: Ledger Browser
@@ -45,24 +46,32 @@ const AccountLedgerHub = ({ customers, liabilities, invoices, payments }: any) =
   }, [selectedPartyId]);
 
   const filteredParties = useMemo(() => {
-    // Combine Customers and Lenders into one sorted list
-    const custs = customers.map((c: any) => ({ 
+    const normalize = (s: string) => (s || '').trim().toUpperCase().replace(/\s*\(lender\)\s*$/i, '');
+    const custByNorm = new Map<string, any>();
+    customers.forEach((c: any) => custByNorm.set(normalize(c.name), c));
+    const custs = customers.map((c: any) => {
+      const matchLia = liabilities.find((l: any) => normalize(l.providerName) === normalize(c.name));
+      return { 
         id: c.id, 
         name: c.name, 
-        type: 'CUSTOMER', 
+        type: 'CUSTOMER' as const, 
         label: `${c.name}`,
-        raw: c 
-    }));
-    
-    const lends = liabilities.map((l: any) => ({ 
+        raw: c,
+        matchingLiabilityId: matchLia?.id as string | undefined
+      };
+    });
+
+    const lends = liabilities
+      .filter((l: any) => !custByNorm.has(normalize(l.providerName)))
+      .map((l: any) => ({ 
         id: l.id, 
         name: l.providerName, 
-        type: 'LENDER', 
+        type: 'LENDER' as const, 
         label: `${l.providerName} (Lender)`,
         raw: l 
-    }));
+      }));
 
-    return [...custs, ...lends].sort((a, b) => a.name.localeCompare(b.name));
+    return [...custs, ...lends].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   }, [customers, liabilities]);
 
   const selectedPartyData = useMemo(() => {
@@ -78,11 +87,14 @@ const AccountLedgerHub = ({ customers, liabilities, invoices, payments }: any) =
 
     if (party.type === 'CUSTOMER') {
       const cust = customers.find((c: any) => c.id === party.id);
-      
+      const liaId = (party as any).matchingLiabilityId as string | undefined;
+      const lender = liaId ? liabilities.find((l: any) => l.id === liaId) : null;
+
       // --- OPENING BALANCE LOGIC BASED ON VIEW SCOPE ---
       if (viewScope === 'COMBINED') {
-         // Interest Principal (Asset) + General Opening (Receivable/Payable) - Credit Principal (Liability)
-         opening = (cust?.interestPrincipal || 0) + (cust?.openingBalance || 0) - (cust?.creditPrincipal || 0);
+         const custOpening = (cust?.interestPrincipal || 0) + (cust?.openingBalance || 0) - (cust?.creditPrincipal || 0);
+         const lenderOpening = lender ? -(lender.principal || 0) : 0;
+         opening = custOpening + lenderOpening;
       } else if (viewScope === 'INTEREST') {
          opening = cust?.interestPrincipal || 0;
       } else if (viewScope === 'GENERAL') {
@@ -91,43 +103,45 @@ const AccountLedgerHub = ({ customers, liabilities, invoices, payments }: any) =
          opening = 0;
       }
 
-      // --- FILTER INVOICES ---
-      const relevantInvoices = invoices.filter((i: any) => {
+      // --- FILTER INVOICES (customer + lender when merged) ---
+      const custInvoices = invoices.filter((i: any) => {
          if (i.customerId !== party.id || i.isVoid) return false;
          if (viewScope === 'COMBINED') return true;
          return i.type === viewScope; 
       });
+      const lenderInvoices = viewScope === 'COMBINED' && liaId
+        ? invoices.filter((i: any) => i.lenderId === liaId && !i.isVoid)
+        : [];
 
-      // --- FILTER PAYMENTS ---
-      const relevantPayments = payments.filter((p: any) => {
+      // --- FILTER PAYMENTS (customer + lender when merged) ---
+      const custPayments = payments.filter((p: any) => {
          if (p.sourceId !== party.id) return false;
          if (viewScope === 'COMBINED') return true;
-         
-         // Strict Category Matching
          if (viewScope === 'ROYALTY') return p.category === 'ROYALTY';
          if (viewScope === 'INTEREST') return p.category === 'INTEREST' || p.category === 'PRINCIPAL_RECOVERY';
          if (viewScope === 'CHIT') return p.category === 'CHIT' || p.category === 'CHIT_FUND';
          if (viewScope === 'GENERAL') return p.category === 'GENERAL' || p.category === 'CUSTOMER_PAYMENT';
          return false;
       });
+      const lenderPayments = viewScope === 'COMBINED' && liaId
+        ? payments.filter((p: any) => p.sourceId === liaId)
+        : [];
 
       entries = [
-        ...relevantInvoices.map((i: any) => ({
-          date: i.date, 
-          ref: i.invoiceNumber, 
-          desc: `${i.type} BILLING ${i.direction === 'OUT' ? '(PAYOUT)' : ''}`,
-          // FIX: If direction is OUT (Payable), it goes to CR (Credit). If IN (Receivable), it goes to DR (Debit).
-          dr: i.direction === 'OUT' ? 0 : i.amount, 
-          cr: i.direction === 'OUT' ? i.amount : 0, 
-          type: 'INVOICE'
+        ...custInvoices.map((i: any) => ({
+          date: i.date, ref: i.invoiceNumber, desc: `${i.type} BILLING ${i.direction === 'OUT' ? '(PAYOUT)' : ''}`,
+          dr: i.direction === 'OUT' ? 0 : i.amount, cr: i.direction === 'OUT' ? i.amount : 0, type: 'INVOICE'
         })),
-        ...relevantPayments.map((p: any) => ({
-          date: p.date, 
-          ref: p.voucherType, 
-          desc: p.category, 
-          dr: p.type === 'OUT' ? p.amount : 0, // We paid them -> Debit their account (reduces liability/increases debt)
-          cr: p.type === 'IN' ? p.amount : 0,  // We received -> Credit their account (reduces asset)
-          type: 'PAYMENT'
+        ...custPayments.map((p: any) => ({
+          date: p.date, ref: p.voucherType, desc: p.category,
+          dr: p.type === 'OUT' ? p.amount : 0, cr: p.type === 'IN' ? p.amount : 0, type: 'PAYMENT'
+        })),
+        ...lenderInvoices.map((i: any) => ({
+          date: i.date, ref: i.invoiceNumber, desc: 'INTEREST ACCRUAL', dr: 0, cr: i.amount, type: 'INVOICE'
+        })),
+        ...lenderPayments.map((p: any) => ({
+          date: p.date, ref: p.voucherType, desc: p.category,
+          dr: p.type === 'OUT' ? p.amount : 0, cr: p.type === 'IN' ? p.amount : 0, type: 'PAYMENT'
         }))
       ];
 
@@ -157,6 +171,9 @@ const AccountLedgerHub = ({ customers, liabilities, invoices, payments }: any) =
 
     return { party, opening, rows, closing: running };
   }, [selectedPartyData, customers, liabilities, invoices, payments, viewScope]);
+
+  // Date-wise ascending (oldest first, newest last)
+  const rowsChronological = ledgerData ? ledgerData.rows : [];
 
   const handlePrint = () => {
     window.print();
@@ -274,38 +291,38 @@ const AccountLedgerHub = ({ customers, liabilities, invoices, payments }: any) =
                      </td>
                      {/* Dr column: positive opening = Dr (they owe us / we lent out) */}
                      <td className="px-8 py-4 text-sm font-mono font-bold text-emerald-600 text-right print:px-2">
-                       {ledgerData.opening > 0 ? `₹${ledgerData.opening.toLocaleString()}` : '-'}
+                       {ledgerData.opening > 0 ? ledgerData.opening.toLocaleString() : '-'}
                      </td>
                      {/* Cr column: negative opening = Cr (we owe them / loan taken) */}
                      <td className="px-8 py-4 text-sm font-mono font-bold text-rose-600 text-right print:px-2">
-                       {ledgerData.opening < 0 ? `₹${Math.abs(ledgerData.opening).toLocaleString()}` : '-'}
+                       {ledgerData.opening < 0 ? Math.abs(ledgerData.opening).toLocaleString() : '-'}
                      </td>
                      <td className="px-8 py-4 text-right text-sm font-mono font-bold text-slate-800 print:px-2">
-                       ₹{Math.abs(ledgerData.opening).toLocaleString()}
+                       {Math.abs(ledgerData.opening).toLocaleString()}
                        <span className="text-[9px] text-slate-400 ml-1">{ledgerData.opening >= 0 ? 'Dr' : 'Cr'}</span>
                      </td>
                    </tr>
                  );
                })()}
                
-               {/* TRANSACTIONS */}
-               {ledgerData.rows.map((row: any, i: number) => (
+               {/* TRANSACTIONS — date-wise ascending (oldest first, newest last) */}
+               {rowsChronological.map((row: any, i: number) => (
                  <tr key={i} className="hover:bg-slate-50 transition-colors print:hover:bg-transparent">
                     <td className="px-8 py-4 text-xs font-bold text-slate-500 print:px-2">{new Date(row.date).toLocaleDateString()}</td>
                     <td className="px-8 py-4 print:px-2">
                         <div className="text-sm font-bold text-slate-800">{row.ref}</div>
                         <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest">{row.desc}</div>
                     </td>
-                    <td className="px-8 py-4 text-sm font-mono font-bold text-emerald-600 text-right print:px-2">{row.dr ? `₹${row.dr.toLocaleString()}` : '-'}</td>
-                    <td className="px-8 py-4 text-sm font-mono font-bold text-rose-600 text-right print:px-2">{row.cr ? `₹${row.cr.toLocaleString()}` : '-'}</td>
+                    <td className="px-8 py-4 text-sm font-mono font-bold text-emerald-600 text-right print:px-2">{row.dr ? row.dr.toLocaleString() : '-'}</td>
+                    <td className="px-8 py-4 text-sm font-mono font-bold text-rose-600 text-right print:px-2">{row.cr ? row.cr.toLocaleString() : '-'}</td>
                     <td className={`px-8 py-4 text-sm font-mono font-bold text-right print:px-2 ${row.balance < 0 ? 'text-rose-600' : 'text-slate-900'}`}>
-                        ₹{Math.abs(row.balance).toLocaleString()} 
+                        {Math.abs(row.balance).toLocaleString()}
                         <span className="text-[9px] text-slate-400 ml-1">{row.balance >= 0 ? 'Dr' : 'Cr'}</span>
                     </td>
                  </tr>
                ))}
                
-               {ledgerData.rows.length === 0 && (
+               {rowsChronological.length === 0 && (
                   <tr>
                      <td colSpan={5} className="py-12 text-center text-xs font-black text-slate-300 uppercase tracking-widest">No transactions found for this view</td>
                   </tr>
@@ -317,19 +334,18 @@ const AccountLedgerHub = ({ customers, liabilities, invoices, payments }: any) =
                <tr className="border-b border-slate-700">
                   <td colSpan={2} className="px-8 py-4 text-right text-[10px] font-black uppercase tracking-widest text-slate-400">Column Totals</td>
                   <td className="px-8 py-4 text-right text-sm font-mono font-black text-emerald-400">
-                     ₹{(ledgerData.rows.reduce((s: number, r: any) => s + (r.dr || 0), 0) + (ledgerData.opening > 0 ? ledgerData.opening : 0)).toLocaleString()}
+                     {(ledgerData.rows.reduce((s: number, r: any) => s + (r.dr || 0), 0) + (ledgerData.opening > 0 ? ledgerData.opening : 0)).toLocaleString()}
                      <div className="text-[8px] font-black uppercase tracking-widest text-slate-500 mt-0.5">Total Debit</div>
                   </td>
                   <td className="px-8 py-4 text-right text-sm font-mono font-black text-rose-400">
-                     ₹{(ledgerData.rows.reduce((s: number, r: any) => s + (r.cr || 0), 0) + (ledgerData.opening < 0 ? Math.abs(ledgerData.opening) : 0)).toLocaleString()}
+                     {(ledgerData.rows.reduce((s: number, r: any) => s + (r.cr || 0), 0) + (ledgerData.opening < 0 ? Math.abs(ledgerData.opening) : 0)).toLocaleString()}
                      <div className="text-[8px] font-black uppercase tracking-widest text-slate-500 mt-0.5">Total Credit</div>
                   </td>
-                  <td className="px-8 py-4 text-right text-xl font-display font-black tracking-tighter">
-                     <div className="text-xs font-black uppercase tracking-widest mb-1">Closing Balance</div>
-                     ₹{Math.abs(ledgerData.closing).toLocaleString()}
-                     <span className={`text-xs ml-2 font-black ${ledgerData.closing >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                       {ledgerData.closing >= 0 ? '＋ They Owe You' : '－ You Owe Them'}
+                  <td className="px-8 py-4 text-right">
+                     <span className={`text-sm font-mono font-black ${ledgerData.closing < 0 ? 'text-rose-400' : ''}`}>
+                       {ledgerData.closing < 0 ? '−' : ''}{Math.abs(ledgerData.closing).toLocaleString()}
                      </span>
+                     <div className="text-[8px] font-black uppercase tracking-widest text-slate-500 mt-0.5">Closing Balance</div>
                   </td>
                </tr>
             </tfoot>
@@ -368,8 +384,8 @@ const ReportCenter: React.FC<ReportCenterProps> = (props) => {
   return (
     <div className="space-y-8 animate-fadeIn pb-10">
       {/* HEADER - Hidden on Print */}
-      <div className="print:hidden">
-        <h2 className="text-3xl font-display font-black text-slate-900 uppercase italic tracking-tighter">Analytics Center</h2>
+      <div className="print:hidden mb-2">
+        <h2 className="text-3xl font-display font-black text-slate-900 uppercase italic tracking-tighter">Analytics</h2>
         <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">Financial Intelligence & Reporting</p>
       </div>
 
@@ -382,7 +398,8 @@ const ReportCenter: React.FC<ReportCenterProps> = (props) => {
                { path: '/outstanding', label: 'Outstanding' },
                { path: '/income-ledger', label: 'Income Ledger' },
                { path: '/expense-ledger', label: 'Expense Ledger' },
-               { path: '/statements', label: 'Statements' }
+               { path: '/profit-loss', label: 'Profit & Loss' },
+               { path: '/balance-sheet', label: 'Balance Sheet' },
             ].map(tab => (
                <Link 
                   key={tab.path}
@@ -399,7 +416,8 @@ const ReportCenter: React.FC<ReportCenterProps> = (props) => {
         <Route path="ledger" element={<GeneralLedger payments={props.payments} openingBalances={props.openingBalances} bankAccounts={props.bankAccounts} />} />
         <Route path="accounts" element={<AccountLedgerHub {...props} />} />
         <Route path="outstanding" element={<OutstandingReports customers={props.customers} invoices={props.invoices} liabilities={props.liabilities} payments={props.payments} onDrillDown={handleDrillDown} />} />
-        <Route path="statements" element={<ReportList {...props} />} />
+        <Route path="profit-loss" element={<ReportList {...props} defaultType="PL" />} />
+        <Route path="balance-sheet" element={<ReportList {...props} defaultType="BS" />} />
         <Route path="expense-ledger" element={<ExpenseLedger payments={props.payments} />} />
         <Route path="income-ledger" element={<IncomeLedger payments={props.payments} />} />
       </Routes>

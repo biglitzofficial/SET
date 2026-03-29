@@ -52,16 +52,26 @@ const GeneralLedger: React.FC<GeneralLedgerProps> = ({ payments, openingBalances
     const totalIncome = filteredRows.filter(r => r.type === 'IN').reduce((acc, r) => acc + r.amount, 0);
     const totalExpense = filteredRows.filter(r => r.type === 'OUT').reduce((acc, r) => acc + r.amount, 0);
 
+    // Date-wise order (oldest first, chronological)
+    const rowsChronological = [...filteredRows];
+
     return {
       opening,
-      current: currentBalance, // Actual closing balance regardless of filter
-      rows: filteredRows, // Chronological
+      current: currentBalance,
+      rows: rowsChronological,
       summary: { totalIncome, totalExpense }
     };
   }, [payments, selectedBook, openingBalances, bankAccounts, filterType]);
 
+  const totalRows = ledgerData.rows.length;
+
   return (
     <div className="space-y-8 animate-fadeIn">
+      {/* Section Header */}
+      <div>
+        <h3 className="text-xl font-display font-black text-slate-800 uppercase italic tracking-tighter">Bank Books</h3>
+        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">Cash & Bank Ledger · Running Balance</p>
+      </div>
       {/* Book Selector & Filter */}
       <div className="flex flex-col md:flex-row justify-between gap-6 items-start md:items-center">
           <div className="flex gap-2 overflow-x-auto pb-2 md:pb-0 w-full md:w-auto">
@@ -101,35 +111,44 @@ const GeneralLedger: React.FC<GeneralLedgerProps> = ({ payments, openingBalances
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
          <div className="bg-white p-6 rounded-[2rem] border border-slate-200 shadow-sm">
             <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2">Book Opening</div>
-            <div className="text-2xl font-display font-black text-slate-900 italic tracking-tighter">₹{ledgerData.opening.toLocaleString()}</div>
+            <div className="text-2xl font-display font-black text-slate-900 italic tracking-tighter">{ledgerData.opening.toLocaleString()}</div>
          </div>
          {filterType !== 'OUT' && (
              <div className="bg-emerald-50 p-6 rounded-[2rem] border border-emerald-100 shadow-sm">
                 <div className="text-[9px] font-black text-emerald-600 uppercase tracking-widest mb-2">Total Receipts (Filtered)</div>
-                <div className="text-2xl font-display font-black text-emerald-700 italic tracking-tighter">+ ₹{ledgerData.summary.totalIncome.toLocaleString()}</div>
+                <div className="text-2xl font-display font-black text-emerald-700 italic tracking-tighter">+ {ledgerData.summary.totalIncome.toLocaleString()}</div>
              </div>
          )}
          {filterType !== 'IN' && (
              <div className="bg-rose-50 p-6 rounded-[2rem] border border-rose-100 shadow-sm">
                 <div className="text-[9px] font-black text-rose-600 uppercase tracking-widest mb-2">Total Payments (Filtered)</div>
-                <div className="text-2xl font-display font-black text-rose-700 italic tracking-tighter">- ₹{ledgerData.summary.totalExpense.toLocaleString()}</div>
+                <div className="text-2xl font-display font-black text-rose-700 italic tracking-tighter">- {ledgerData.summary.totalExpense.toLocaleString()}</div>
              </div>
          )}
          <div className="bg-slate-900 p-6 rounded-[2rem] shadow-lg text-white">
             <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2">Current Closing Balance</div>
-            <div className="text-2xl font-display font-black text-white italic tracking-tighter">₹{ledgerData.current.toLocaleString()}</div>
+            <div className="text-2xl font-display font-black text-white italic tracking-tighter">{ledgerData.current.toLocaleString()}</div>
          </div>
+      </div>
+
+      {/* Ledger Table Title */}
+      <div className="bg-slate-50 border-2 border-slate-200 rounded-2xl px-6 py-4 flex items-center justify-between">
+        <div>
+          <h4 className="text-2xl font-display font-black text-slate-900 uppercase italic tracking-tighter">{selectedBankName} Ledger</h4>
+          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">Chronological transactions with running balance</p>
+        </div>
+        <span className="text-xs font-black text-slate-500 uppercase tracking-widest bg-white px-4 py-2 rounded-xl border border-slate-200">{totalRows} transaction{totalRows !== 1 ? 's' : ''}</span>
       </div>
 
       {/* Data Table */}
       <div className="bg-white rounded-[1.5rem] border border-slate-200 shadow-lg overflow-hidden">
         <table className="min-w-full divide-y divide-slate-100">
-          <thead className="bg-dark-900 text-white">
+          <thead className="bg-slate-900 text-white">
             <tr>
               <th className="px-6 py-5 text-left text-[10px] font-black uppercase tracking-widest opacity-80">Date</th>
-              <th className="px-6 py-5 text-left text-[10px] font-black uppercase tracking-widest opacity-80">Particulars</th>
-              <th className="px-6 py-5 text-right text-[10px] font-black uppercase tracking-widest opacity-80">Debit (In)</th>
-              <th className="px-6 py-5 text-right text-[10px] font-black uppercase tracking-widest opacity-80">Credit (Out)</th>
+              <th className="px-6 py-5 text-left text-[10px] font-black uppercase tracking-widest opacity-80">Description</th>
+              <th className="px-6 py-5 text-right text-[10px] font-black uppercase tracking-widest opacity-80">In</th>
+              <th className="px-6 py-5 text-right text-[10px] font-black uppercase tracking-widest opacity-80">Out</th>
               <th className="px-6 py-5 text-right text-[10px] font-black uppercase tracking-widest opacity-80">Balance</th>
             </tr>
           </thead>
@@ -143,7 +162,7 @@ const GeneralLedger: React.FC<GeneralLedgerProps> = ({ payments, openingBalances
                </td>
                <td className="px-6 py-4 text-right"></td>
                <td className="px-6 py-4 text-right"></td>
-               <td className="px-6 py-4 text-right text-sm font-display font-black text-slate-900 italic">₹{ledgerData.opening.toLocaleString()}</td>
+               <td className="px-6 py-4 text-right text-sm font-display font-black text-slate-900 italic">{ledgerData.opening.toLocaleString()}</td>
             </tr>
 
             {ledgerData.rows.map(row => (
@@ -153,9 +172,9 @@ const GeneralLedger: React.FC<GeneralLedgerProps> = ({ payments, openingBalances
                     <div className="text-sm font-bold text-slate-800 uppercase">{row.sourceName}</div> 
                     <div className="text-[10px] text-slate-400 font-bold">{row.category} {row.notes ? `- ${row.notes}` : ''}</div>
                 </td>
-                <td className="px-6 py-5 text-sm font-mono font-bold text-emerald-600 text-right">{row.type === 'IN' ? `₹${row.amount.toLocaleString()}` : '-'}</td>
-                <td className="px-6 py-5 text-sm font-mono font-bold text-rose-600 text-right">{row.type === 'OUT' ? `₹${row.amount.toLocaleString()}` : '-'}</td>
-                <td className="px-6 py-5 text-sm font-display font-black text-slate-900 text-right italic">₹{row.runningBalance.toLocaleString()}</td>
+                <td className="px-6 py-5 text-sm font-mono font-bold text-emerald-600 text-right">{row.type === 'IN' ? `${row.amount.toLocaleString()}` : '-'}</td>
+                <td className="px-6 py-5 text-sm font-mono font-bold text-rose-600 text-right">{row.type === 'OUT' ? `${row.amount.toLocaleString()}` : '-'}</td>
+                <td className="px-6 py-5 text-sm font-display font-black text-slate-900 text-right italic">{row.runningBalance.toLocaleString()}</td>
               </tr>
             ))}
             {ledgerData.rows.length === 0 && (
@@ -166,20 +185,22 @@ const GeneralLedger: React.FC<GeneralLedgerProps> = ({ payments, openingBalances
              <tr>
                  <td colSpan={2} className="px-6 py-5 text-left text-xs font-black uppercase tracking-widest">Closing Balance</td>
                  <td className="px-6 py-5 text-right text-emerald-400 font-mono font-bold">
-                     {filterType !== 'OUT' ? `+ ₹${ledgerData.summary.totalIncome.toLocaleString()}` : '-'}
+                     {filterType !== 'OUT' ? `+ ${ledgerData.summary.totalIncome.toLocaleString()}` : '-'}
                  </td>
                  <td className="px-6 py-5 text-right text-rose-400 font-mono font-bold">
-                     {filterType !== 'IN' ? `- ₹${ledgerData.summary.totalExpense.toLocaleString()}` : '-'}
+                     {filterType !== 'IN' ? `- ${ledgerData.summary.totalExpense.toLocaleString()}` : '-'}
                  </td>
                  <td className="px-6 py-5 text-right text-xl font-display font-black tracking-tighter">
-                     ₹{ledgerData.current.toLocaleString()}
+                     {ledgerData.current.toLocaleString()}
                  </td>
              </tr>
           </tfoot>
         </table>
       </div>
+
     </div>
   );
 };
 
 export default GeneralLedger;
+

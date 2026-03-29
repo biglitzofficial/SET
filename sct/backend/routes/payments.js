@@ -1,7 +1,7 @@
 import express from 'express';
 import { body, validationResult } from 'express-validator';
 import { db, COLLECTIONS } from '../config/firebase.js';
-import { authenticate, checkPermission } from '../middleware/auth.js';
+import { authenticate, checkPermission, assertStaffCanEditOrDelete } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -114,6 +114,34 @@ router.post('/', [
       }
     }
 
+    // PRINCIPAL_RECOVERY (IN): reduce customer's interestPrincipal
+    if (req.body.type === 'IN' && req.body.category === 'PRINCIPAL_RECOVERY' && req.body.sourceId) {
+      const custRef = db.collection(COLLECTIONS.CUSTOMERS).doc(req.body.sourceId);
+      const custDoc = await custRef.get();
+      if (custDoc.exists) {
+        const cust = custDoc.data();
+        const newPrincipal = Math.max(0, (cust.interestPrincipal || 0) - req.body.amount);
+        await custRef.update({
+          interestPrincipal: newPrincipal,
+          updatedAt: Date.now()
+        });
+      }
+    }
+
+    // LOAN_REPAYMENT (OUT): reduce liability's principal
+    if (req.body.type === 'OUT' && req.body.category === 'LOAN_REPAYMENT' && req.body.sourceId) {
+      const liabRef = db.collection(COLLECTIONS.LIABILITIES).doc(req.body.sourceId);
+      const liabDoc = await liabRef.get();
+      if (liabDoc.exists) {
+        const liab = liabDoc.data();
+        const newPrincipal = Math.max(0, (liab.principal || 0) - req.body.amount);
+        await liabRef.update({
+          principal: newPrincipal,
+          updatedAt: Date.now()
+        });
+      }
+    }
+
     // Log action
     await db.collection(COLLECTIONS.AUDIT_LOGS).add({
       timestamp: Date.now(),
@@ -194,6 +222,8 @@ router.delete('/:id', [
     if (!doc.exists) {
       return res.status(404).json({ error: { message: 'Payment not found' } });
     }
+    const delErr = assertStaffCanEditOrDelete(req, doc.data(), 'delete');
+    if (delErr) return res.status(delErr.status).json({ error: { message: delErr.message } });
 
     const payment = doc.data();
 
@@ -214,6 +244,34 @@ router.delete('/:id', [
         await invoiceRef.update({
           balance: newBalance,
           status: newStatus,
+          updatedAt: Date.now()
+        });
+      }
+    }
+
+    // PRINCIPAL_RECOVERY (IN): restore customer's interestPrincipal on delete
+    if (payment.type === 'IN' && payment.category === 'PRINCIPAL_RECOVERY' && payment.sourceId) {
+      const custRef = db.collection(COLLECTIONS.CUSTOMERS).doc(payment.sourceId);
+      const custDoc = await custRef.get();
+      if (custDoc.exists) {
+        const cust = custDoc.data();
+        const newPrincipal = (cust.interestPrincipal || 0) + payment.amount;
+        await custRef.update({
+          interestPrincipal: newPrincipal,
+          updatedAt: Date.now()
+        });
+      }
+    }
+
+    // LOAN_REPAYMENT (OUT): restore liability's principal on delete
+    if (payment.type === 'OUT' && payment.category === 'LOAN_REPAYMENT' && payment.sourceId) {
+      const liabRef = db.collection(COLLECTIONS.LIABILITIES).doc(payment.sourceId);
+      const liabDoc = await liabRef.get();
+      if (liabDoc.exists) {
+        const liab = liabDoc.data();
+        const newPrincipal = (liab.principal || 0) + payment.amount;
+        await liabRef.update({
+          principal: newPrincipal,
           updatedAt: Date.now()
         });
       }

@@ -14,7 +14,7 @@ const IncomeLedger: React.FC<IncomeLedgerProps> = ({ payments }) => {
     return payments
       .filter(p =>
         p.type === 'IN' &&
-        !['CONTRA'].includes(p.category) &&
+        !['CONTRA', 'TRANSFER'].includes(p.category) &&
         !p.category?.startsWith('INVESTMENT_')
       )
       .sort((a, b) => b.date - a.date); // newest first
@@ -36,8 +36,10 @@ const IncomeLedger: React.FC<IncomeLedgerProps> = ({ payments }) => {
       running += p.amount;
       return { ...p, runningTotal: running };
     });
-    return withRunning.reverse();
+    return withRunning.reverse(); // newest first
   }, [allIncomePayments, catFilter, search]);
+
+  const totalRows = filteredIncome.length;
 
   const grandTotal = useMemo(() =>
     allIncomePayments
@@ -54,7 +56,7 @@ const IncomeLedger: React.FC<IncomeLedgerProps> = ({ payments }) => {
         <div className="bg-white rounded-2xl border border-slate-200 shadow p-5 col-span-2 md:col-span-1">
           <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Income</div>
           <div className="text-2xl font-display font-black tracking-tighter text-emerald-500">
-            ₹{allIncomePayments.reduce((s, p) => s + p.amount, 0).toLocaleString()}
+            {allIncomePayments.reduce((s, p) => s + p.amount, 0).toLocaleString()}
           </div>
           <div className="text-[9px] font-bold text-slate-400 mt-1">{allIncomePayments.length} transactions (all time)</div>
         </div>
@@ -67,7 +69,7 @@ const IncomeLedger: React.FC<IncomeLedgerProps> = ({ payments }) => {
               className={`bg-white rounded-2xl border shadow p-5 cursor-pointer transition-all hover:shadow-md ${catFilter === cat ? 'border-emerald-400 bg-emerald-50' : 'border-slate-200'}`}
             >
               <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 truncate">{cat}</div>
-              <div className="text-xl font-display font-black tracking-tighter text-slate-800">₹{total.toLocaleString()}</div>
+              <div className="text-xl font-display font-black tracking-tighter text-slate-800">{total.toLocaleString()}</div>
             </div>
           );
         })}
@@ -90,7 +92,7 @@ const IncomeLedger: React.FC<IncomeLedgerProps> = ({ payments }) => {
             />
             <div className="text-right">
               <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Showing</div>
-              <div className="text-xl font-display font-black tracking-tighter text-emerald-500">₹{grandTotal.toLocaleString()}</div>
+              <div className="text-xl font-display font-black tracking-tighter text-emerald-500">{grandTotal.toLocaleString()}</div>
             </div>
           </div>
         </div>
@@ -150,8 +152,8 @@ const IncomeLedger: React.FC<IncomeLedgerProps> = ({ payments }) => {
                       {p.mode}{p.targetMode ? ` → ${p.targetMode}` : ''}
                     </span>
                   </td>
-                  <td className="px-6 py-4 text-right font-mono font-black text-emerald-600">₹{p.amount.toLocaleString()}</td>
-                  <td className="px-6 py-4 text-right font-mono text-slate-400 text-[10px]">₹{(p as any).runningTotal.toLocaleString()}</td>
+                  <td className="px-6 py-4 text-right font-mono font-black text-emerald-600">{p.amount.toLocaleString()}</td>
+                  <td className="px-6 py-4 text-right font-mono text-slate-400 text-[10px]">{(p as any).runningTotal.toLocaleString()}</td>
                 </tr>
               ))}
             </tbody>
@@ -160,7 +162,7 @@ const IncomeLedger: React.FC<IncomeLedgerProps> = ({ payments }) => {
                 <td colSpan={4} className="px-6 py-4 font-black text-white uppercase text-[10px] tracking-widest">
                   Grand Total — {filteredIncome.length} Entries
                 </td>
-                <td className="px-6 py-4 text-right font-mono font-black text-emerald-300 text-sm">₹{grandTotal.toLocaleString()}</td>
+                <td className="px-6 py-4 text-right font-mono font-black text-emerald-300 text-sm">{grandTotal.toLocaleString()}</td>
                 <td></td>
               </tr>
             </tfoot>
@@ -172,3 +174,4 @@ const IncomeLedger: React.FC<IncomeLedgerProps> = ({ payments }) => {
 };
 
 export default IncomeLedger;
+

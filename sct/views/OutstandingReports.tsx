@@ -1,8 +1,9 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import * as XLSX from 'xlsx';
 import { Customer, Invoice, Liability, Payment } from '../types';
-import { dueDatesAPI } from '../services/api';
+import { computeOpening, sumPaymentsInForLedger } from '../utils/ledgerUtils';
 
 interface OutstandingReportsProps {
   customers: Customer[];
@@ -13,89 +14,28 @@ interface OutstandingReportsProps {
   summaryOnly?: boolean; // If true, only show summary cards without detailed tables
 }
 
-interface DueDateRecord {
-  id: string; // customer/lender ID
-  category: string; // ROYALTY, INTEREST, CHIT, GENERAL, or PAYABLE
-  dueDate: number; // timestamp
-  amount: number;
-}
-
 const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invoices, liabilities, payments, onDrillDown, summaryOnly = false }) => {
   const [searchParams] = useSearchParams();
-  const [activeTab, setActiveTab] = useState<'RECEIVABLES' | 'PAYABLES' | 'ADVANCES' | 'MARKET_CAPITAL'>('RECEIVABLES');
+  const [activeTab, setActiveTab] = useState<'OVERALL' | 'RECEIVABLES' | 'PAYABLES' | 'ADVANCES' | 'MARKET_CAPITAL'>('OVERALL');
   const [sortOrder, setSortOrder] = useState<'ASC' | 'DESC'>('DESC');
-  const [categoryFilter, setCategoryFilter] = useState<'ALL' | 'ROYALTY' | 'INTEREST' | 'CHIT' | 'GENERAL'>('ALL');
-  
-  // Due dates storage - persisted in Firebase
-  const [dueDates, setDueDates] = useState<DueDateRecord[]>([]);
-  const [dueDatesLoading, setDueDatesLoading] = useState(true);
-  
-  // Date picker state
-  const [editingDueDate, setEditingDueDate] = useState<{ id: string; category: string } | null>(null);
-  
-  // Load due dates from Firebase
-  useEffect(() => {
-    const loadDueDates = async () => {
-      try {
-        const data = await dueDatesAPI.getAll();
-        setDueDates(data || []);
-      } catch (error) {
-        console.error('Failed to load due dates:', error);
-      } finally {
-        setDueDatesLoading(false);
-      }
-    };
-    loadDueDates();
-  }, []);
-  
-  // Helper: Set due date for an outstanding
-  const setDueDate = async (id: string, category: string, dueDate: number, amount: number) => {
-    try {
-      console.log('Saving due date:', { id, category, dueDate, amount });
-      const result = await dueDatesAPI.upsert({ id, category, dueDate, amount });
-      console.log('Due date saved successfully:', result);
-      setDueDates(prev => {
-        const filtered = prev.filter(d => !(d.id === id && d.category === category));
-        return [...filtered, { id, category, dueDate, amount }];
-      });
-      setEditingDueDate(null);
-    } catch (error: any) {
-      console.error('Failed to save due date:', error);
-      console.error('Error details:', error.message, error.stack);
-      alert(`Failed to save due date: ${error.message || 'Please try again.'}`);
-    }
-  };
-  
-  // Helper: Get due date for an outstanding
-  const getDueDate = (id: string, category: string): number | undefined => {
-    return dueDates.find(d => d.id === id && d.category === category)?.dueDate;
-  };
-  
-  // Helper: Categorize by due date
-  const categorizeDueDate = (dueDate: number | undefined): 'OVERDUE' | 'TODAY' | 'UPCOMING' | 'NONE' => {
-    if (!dueDate) return 'NONE';
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const todayTimestamp = today.getTime();
-    const dueDateObj = new Date(dueDate);
-    dueDateObj.setHours(0, 0, 0, 0);
-    const dueDateTimestamp = dueDateObj.getTime();
-    
-    if (dueDateTimestamp < todayTimestamp) return 'OVERDUE';
-    if (dueDateTimestamp === todayTimestamp) return 'TODAY';
-    return 'UPCOMING';
-  };
-  
-  // Helper: Check if due within 3 days (for reminders)
-  const isDueWithin3Days = (dueDate: number | undefined): boolean => {
-    if (!dueDate) return false;
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const threeDaysFromNow = new Date(today.getTime() + 3 * 24 * 60 * 60 * 1000);
-    const dueDateObj = new Date(dueDate);
-    dueDateObj.setHours(0, 0, 0, 0);
-    return dueDateObj.getTime() >= today.getTime() && dueDateObj.getTime() <= threeDaysFromNow.getTime();
-  };
+  const [overallSort, setOverallSort] = useState<{ col: string; dir: 'DESC' | 'ASC' }>({ col: 'net', dir: 'DESC' });
+  // All columns visible by default — user can toggle each off/on
+  const ALL_OVERALL_COLS = [
+    { col: 'royalty',     label: 'Royalty',      cls: 'text-purple-500',  footCls: 'text-purple-300'  },
+    { col: 'interest',    label: 'Interest',     cls: 'text-emerald-600', footCls: 'text-emerald-300' },
+    { col: 'chit',        label: 'Chit',         cls: 'text-orange-500',  footCls: 'text-orange-300'  },
+    { col: 'principal',   label: 'Principal',    cls: 'text-blue-600',    footCls: 'text-blue-300'    },
+    { col: 'general',     label: 'General',      cls: 'text-slate-500',   footCls: 'text-slate-300'   },
+    { col: 'interestOut', label: 'Interest Out', cls: 'text-rose-600',    footCls: 'text-rose-300'    },
+    { col: 'payable',     label: 'Payable',      cls: 'text-rose-500',    footCls: 'text-rose-300'    },
+  ] as const;
+  const [visibleCols, setVisibleCols] = useState<Set<string>>(
+    new Set(ALL_OVERALL_COLS.map(c => c.col))
+  );
+  const [showColPicker, setShowColPicker] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState<'ALL' | 'ROYALTY' | 'INTEREST' | 'CHIT' | 'GENERAL' | 'LOAN' | 'PRINCIPAL' | 'CHIT_ROYALTY_INTEREST'>('ALL');
+  const [overallViewMode, setOverallViewMode] = useState<'PARTY' | 'INVOICE'>('PARTY'); // Party summary vs individual invoices
+  const [listViewMode, setListViewMode] = useState(false); // Single list view — mobile-friendly, all visible
 
   // Handle URL parameters for initial filter and tab
   useEffect(() => {
@@ -103,14 +43,14 @@ const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invo
     const tab = searchParams.get('tab');
     
     // Set the active tab if provided in URL
-    if (tab === 'receivables' || tab === 'payables' || tab === 'advances' || tab === 'market_capital') {
-      setActiveTab(tab.toUpperCase().replace('_', '_') as 'RECEIVABLES' | 'PAYABLES' | 'ADVANCES' | 'MARKET_CAPITAL');
+    if (tab === 'overall' || tab === 'receivables' || tab === 'payables' || tab === 'advances' || tab === 'market_capital') {
+      setActiveTab(tab.toUpperCase().replace('_', '_') as 'OVERALL' | 'RECEIVABLES' | 'PAYABLES' | 'ADVANCES' | 'MARKET_CAPITAL');
       setCategoryFilter('ALL');
     }
     
     // Set the filter if provided in URL (only affects receivables filtering)
-    if (filter && (filter === 'royalty' || filter === 'interest' || filter === 'chit' || filter === 'general')) {
-      setCategoryFilter(filter.toUpperCase() as 'ROYALTY' | 'INTEREST' | 'CHIT' | 'GENERAL');
+    if (filter && (filter === 'royalty' || filter === 'interest' || filter === 'chit' || filter === 'general' || filter === 'loan' || filter === 'principal' || filter === 'chit_royalty_interest')) {
+      setCategoryFilter(filter === 'chit_royalty_interest' ? 'CHIT_ROYALTY_INTEREST' : filter.toUpperCase() as any);
     }
   }, [searchParams]);
 
@@ -121,15 +61,12 @@ const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invo
       const custPayments = payments.filter(p => p.sourceId === cust.id);
 
       // --- LEDGER BALANCE CALCULATION ---
-      // MUST exactly match Party Ledger COMBINED opening formula in ReportCenter.tsx:
-      // opening = interestPrincipal + openingBalance - creditPrincipal
-      const opening = (cust.interestPrincipal || 0) + (cust.openingBalance || 0) - (cust.creditPrincipal || 0);
+      // Uses shared ledger utils: EXCLUDE PRINCIPAL_RECOVERY and LOAN_TAKEN from payIN
+      const opening = computeOpening(cust);
       const totalInvoicesAmount = custInvoices.filter(i => i.direction === 'IN').reduce((sum, i) => sum + i.amount, 0);
-      const paymentsOut = custPayments.filter(p => p.type === 'OUT').reduce((sum, p) => sum + p.amount, 0); // We paid them (Debit)
-
-      // Payables (Credits)
+      const paymentsOut = custPayments.filter(p => p.type === 'OUT').reduce((sum, p) => sum + p.amount, 0);
       const totalPayableInvoices = custInvoices.filter(i => i.direction === 'OUT').reduce((sum, i) => sum + i.amount, 0);
-      const paymentsIn = custPayments.filter(p => p.type === 'IN').reduce((sum, p) => sum + p.amount, 0); // They paid us (Credit)
+      const paymentsIn = sumPaymentsInForLedger(custPayments);
 
       // Net Ledger Balance: (Opening + InvoicesIN + PaymentsOUT) - (InvoicesOUT + PaymentsIN)
       // Positive = Receivable (Debit Balance)
@@ -140,8 +77,8 @@ const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invo
       // Same logic as netLedgerBalance but scoped per category, so filter results match the ledger
       const chitInAmt    = custInvoices.filter(i => i.type === 'CHIT' && i.direction === 'IN').reduce((s, i) => s + i.amount, 0);
       const chitOutAmt   = custInvoices.filter(i => i.type === 'CHIT' && i.direction === 'OUT').reduce((s, i) => s + i.amount, 0);
-      const chitPaidIn   = custPayments.filter(p => p.type === 'IN' && p.category === 'CHIT').reduce((s, p) => s + p.amount, 0);
-      const chitPaidOut  = custPayments.filter(p => p.type === 'OUT' && p.category === 'CHIT').reduce((s, p) => s + p.amount, 0);
+      const chitPaidIn   = custPayments.filter(p => p.type === 'IN'  && (p.category === 'CHIT' || p.category === 'CHIT_FUND')).reduce((s, p) => s + p.amount, 0);
+      const chitPaidOut  = custPayments.filter(p => p.type === 'OUT' && (p.category === 'CHIT' || p.category === 'CHIT_FUND')).reduce((s, p) => s + p.amount, 0);
       const chitNet      = (chitInAmt + chitPaidOut) - (chitOutAmt + chitPaidIn); // positive = receivable, negative = payable
 
       const royaltyAmt   = custInvoices.filter(i => i.type === 'ROYALTY').reduce((s, i) => s + i.amount, 0);
@@ -149,18 +86,32 @@ const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invo
       const royaltyNet   = royaltyAmt - royaltyPaid;
 
       const interestAmt  = custInvoices.filter(i => i.type === 'INTEREST').reduce((s, i) => s + i.amount, 0);
-      const interestPaid = custPayments.filter(p => p.type === 'IN' && (p.category === 'INTEREST' || p.category === 'PRINCIPAL_RECOVERY')).reduce((s, p) => s + p.amount, 0);
+      const interestPaid = custPayments.filter(p => p.type === 'IN' && p.category === 'INTEREST').reduce((s, p) => s + p.amount, 0);
       const interestNet  = interestAmt - interestPaid;
 
-      // GENERAL absorbs the remainder so category totals always reconcile to netLedgerBalance
-      const generalDue   = netLedgerBalance - chitNet - royaltyNet - interestNet;
+      // Interest Out: INTEREST_OUT invoices (we owe them interest) minus LOAN_INTEREST payments
+      const interestOutAmt  = custInvoices.filter(i => i.type === 'INTEREST_OUT' && !i.isVoid).reduce((s, i) => s + i.amount, 0);
+      const interestOutPaid = custPayments.filter(p => p.type === 'OUT' && p.category === 'LOAN_INTEREST').reduce((s, p) => s + p.amount, 0);
+      const interestOutNet  = Math.max(0, interestOutAmt - interestOutPaid);
+
+      // Explicit GENERAL invoice tracking (manual general invoices raised via billing)
+      const generalInvAmt  = custInvoices.filter(i => i.type === 'GENERAL' && i.direction === 'IN').reduce((s, i) => s + i.amount, 0);
+      const generalInvPaid = custPayments.filter(p => p.type === 'IN' && p.category === 'GENERAL').reduce((s, p) => s + p.amount, 0);
+      const generalInvNet  = generalInvAmt - generalInvPaid;
+
+      // GENERAL = trade/other outstanding only (exclude interestOut so it goes to its own column)
+      // Fix: interestOut is in netLedgerBalance; subtracting interestOutNet + creditPrincipal adjustment was
+      // double-counting it into general for creditors. Add 2*interestOutNet to correct (restores principal-only in general).
+      const generalDue   = netLedgerBalance - chitNet - royaltyNet - interestNet - interestOutNet - generalInvNet - (cust.interestPrincipal || 0) + (cust.creditPrincipal || 0);
+      const generalTotal = generalDue + generalInvNet + 2 * interestOutNet; // corrects double-subtraction so interest stays only in interestOut
 
       const breakdown = {
         CHIT:            chitNet,
-        CHIT_RECEIVABLE: Math.max(0, chitInAmt - chitPaidIn), // installments owed to us only (no payout netting)
+        CHIT_RECEIVABLE: Math.max(0, chitInAmt - chitPaidIn),
         ROYALTY:         royaltyNet,
         INTEREST:        interestNet,
-        GENERAL:         generalDue
+        INTEREST_OUT:    interestOutNet,
+        GENERAL:         generalTotal
       };
 
       return { 
@@ -171,9 +122,84 @@ const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invo
     });
   }, [customers, invoices, payments]);
 
+  // OVERALL: every party (customer + liability) with any outstanding, showing full breakdown
+  // Consolidate: when a liability's providerName matches a customer, merge into one row (same person)
+  const overallData = useMemo(() => {
+    const normalize = (s: string) => (s || '').trim().toUpperCase().replace(/\s*\(lender\)\s*$/i, '');
+    const custByNorm = new Map<string, { idx: number }>();
+    const rows: any[] = [];
+
+    customerAnalysis.forEach(c => {
+      const royalty    = c.breakdown.ROYALTY     || 0;
+      const interest   = c.breakdown.INTEREST    || 0;
+      const chit       = c.breakdown.CHIT        || 0;
+      const principal  = c.interestPrincipal    || 0;
+      const general    = c.breakdown.GENERAL    || 0;
+      const interestOut= c.breakdown.INTEREST_OUT|| 0;
+      const net        = c.netLedgerBalance;
+      if (royalty === 0 && interest === 0 && chit === 0 && principal === 0 && general === 0 && interestOut === 0) return;
+      const idx = rows.length;
+      custByNorm.set(normalize(c.name), { idx });
+      rows.push({ id: c.id, name: c.name, phone: c.phone, royalty, interest, chit, principal, general, interestOut, payable: 0, net, sourceType: 'CUSTOMER' });
+    });
+
+    liabilities.forEach(l => {
+      const paidOut = payments
+        .filter(p => p.type === 'OUT' && (p.sourceId === l.id || (p.sourceName || '').toLowerCase() === (l.providerName || '').toLowerCase()))
+        .reduce((sum, p) => sum + p.amount, 0);
+      const remaining = Math.max(0, l.principal - paidOut);
+
+      const interestOutAmt = invoices
+        .filter(i => i.lenderId === l.id && i.type === 'INTEREST_OUT' && !i.isVoid)
+        .reduce((s, i) => s + i.amount, 0);
+      const interestOutPaid = payments
+        .filter(p => p.sourceId === l.id && p.type === 'OUT' && p.category === 'LOAN_INTEREST')
+        .reduce((s, p) => s + p.amount, 0);
+      const interestOut = Math.max(0, interestOutAmt - interestOutPaid);
+
+      const liaAmount = remaining + interestOut;
+      if (liaAmount === 0) return;
+
+      const match = custByNorm.get(normalize(l.providerName));
+      if (match) {
+        const r = rows[match.idx];
+        r.interestOut = (r.interestOut || 0) + interestOut;
+        r.payable = (r.payable || 0) + remaining;
+        r.net = (r.net || 0) - liaAmount;
+      } else {
+        rows.push({ id: l.id, name: l.providerName, phone: l.phone || '', royalty: 0, interest: 0, chit: 0, principal: 0, general: 0, interestOut, payable: remaining, net: -liaAmount, sourceType: 'LIABILITY' });
+      }
+    });
+
+    return rows.sort((a, b) => Math.abs(b.net) - Math.abs(a.net));
+  }, [customerAnalysis, liabilities, payments, invoices]);
+
+  // Individual invoice rows for "By Invoice" view — each bill as its own row with date
+  const invoiceLevelData = useMemo(() => {
+    const rows: any[] = [];
+    const fmtDate = (ts: number) => new Date(ts).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const unpaid = invoices.filter(i => !i.isVoid && (i.balance ?? i.amount) > 0);
+    unpaid.forEach(inv => {
+      const amt = inv.balance ?? inv.amount;
+      const isOut = inv.direction === 'OUT' || inv.type === 'INTEREST_OUT';
+      const typeLabel = inv.type === 'INTEREST_OUT' ? 'INT. OUT' : inv.type?.replace('_', ' ');
+      const categoryCol = inv.type === 'ROYALTY' ? 'royalty' : inv.type === 'INTEREST' ? 'interest' : inv.type === 'CHIT' ? 'chit' : inv.type === 'INTEREST_OUT' ? 'interestOut' : 'general';
+      if (inv.customerId) {
+        const cust = customers.find(c => c.id === inv.customerId);
+        rows.push({ id: inv.id, partyId: inv.customerId, partyName: inv.customerName || cust?.name || '', date: inv.date, dateStr: fmtDate(inv.date), type: typeLabel, voucher: inv.invoiceNumber, amount: amt, isOut, sourceType: 'CUSTOMER' as const, categoryCol });
+      } else if (inv.lenderId) {
+        const l = liabilities.find(li => li.id === inv.lenderId);
+        rows.push({ id: inv.id, partyId: inv.lenderId, partyName: l?.providerName || inv.customerName || '', date: inv.date, dateStr: fmtDate(inv.date), type: 'INT. OUT', voucher: inv.invoiceNumber, amount: amt, isOut: true, sourceType: 'LIABILITY' as const, categoryCol });
+      }
+    });
+    return rows.sort((a, b) => b.date - a.date);
+  }, [customers, liabilities, invoices]);
+
   const data = useMemo(() => {
     let result: any[] = [];
     
+    if (activeTab === 'OVERALL') return []; // handled separately
+
     if (activeTab === 'RECEIVABLES') {
        result = customerAnalysis
          .map(c => {
@@ -182,17 +208,20 @@ const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invo
             if (categoryFilter === 'ALL') {
               displayAmount = c.netLedgerBalance;
               categoryKey = 'ALL';
+            } else if (categoryFilter === 'CHIT_ROYALTY_INTEREST') {
+              displayAmount = (c.breakdown.CHIT || 0) + (c.breakdown.ROYALTY || 0) + (c.breakdown.INTEREST || 0);
+              categoryKey = 'CHIT_ROYALTY_INTEREST';
+            } else if (categoryFilter === 'PRINCIPAL') {
+              displayAmount = (c.isInterest && (c.interestPrincipal || 0) > 0) ? (c.interestPrincipal || 0) : 0;
+              categoryKey = 'PRINCIPAL';
             } else if (categoryFilter === 'CHIT') {
               displayAmount = c.breakdown.CHIT; // mirrors Party Ledger CHIT scope exactly
               categoryKey = 'CHIT';
             } else {
-              displayAmount = c.breakdown[categoryFilter];
+              displayAmount = c.breakdown[categoryFilter] ?? 0;
               categoryKey = categoryFilter;
             }
-            const dueDate = getDueDate(c.id, categoryKey);
-            const dueStatus = categorizeDueDate(dueDate);
-            const needsReminder = isDueWithin3Days(dueDate);
-            return { ...c, displayAmount, categoryKey, dueDate, dueStatus, needsReminder };
+            return { ...c, displayAmount, categoryKey, sourceType: 'CUSTOMER' as const };
          })
          .filter(c => c.displayAmount > 0);
     }
@@ -204,10 +233,7 @@ const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invo
              : categoryFilter === 'INTEREST' ? c.breakdown.INTEREST
              : categoryFilter === 'ROYALTY' ? c.breakdown.ROYALTY
              : c.breakdown.GENERAL;
-           const dueDate = getDueDate(c.id, 'ADVANCE');
-           const dueStatus = categorizeDueDate(dueDate);
-           const needsReminder = isDueWithin3Days(dueDate);
-           return { ...c, displayAmount: catAmt, categoryKey: categoryFilter === 'ALL' ? 'ADVANCE' : categoryFilter, dueDate, dueStatus, needsReminder };
+           return { ...c, displayAmount: catAmt, categoryKey: categoryFilter === 'ALL' ? 'ADVANCE' : categoryFilter, sourceType: 'CUSTOMER' as const };
          })
          .filter(c => c.displayAmount < 0 && !c.isLender);
     }
@@ -216,19 +242,13 @@ const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invo
        result = customers
          .filter(c => c.isInterest && c.interestPrincipal > 0)
          .filter(() => categoryFilter === 'ALL' || categoryFilter === 'INTEREST')
-         .map(c => {
-           const dueDate = getDueDate(c.id, 'CAPITAL');
-           const dueStatus = categorizeDueDate(dueDate);
-           const needsReminder = isDueWithin3Days(dueDate);
-           return { ...c, displayAmount: c.interestPrincipal, categoryKey: 'CAPITAL', dueDate, dueStatus, needsReminder };
-         });
+         .map(c => ({ ...c, displayAmount: c.interestPrincipal, categoryKey: 'CAPITAL', sourceType: 'CUSTOMER' as const }));
     }
     else {
        // PAYABLES
-       // Liabilities (money borrowed - INTEREST / GENERAL category)
-       const lenders = (categoryFilter === 'ALL' || categoryFilter === 'INTEREST' || categoryFilter === 'GENERAL')
+       // LOAN: Liabilities (money borrowed) + isLender customers (credit principal)
+       const lenders = (categoryFilter === 'ALL' || categoryFilter === 'LOAN')
          ? liabilities.map(l => {
-             // Subtract any OUT payments matched by name (covers LOAN_REPAYMENT by sourceId or GENERAL payments by sourceName)
              const paidOut = payments
                .filter(p => p.type === 'OUT' && (
                  p.sourceId === l.id ||
@@ -236,25 +256,26 @@ const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invo
                ))
                .reduce((sum, p) => sum + p.amount, 0);
              const remaining = Math.max(0, l.principal - paidOut);
-             const dueDate = getDueDate(l.id, 'PAYABLE');
-             const dueStatus = categorizeDueDate(dueDate);
-             const needsReminder = isDueWithin3Days(dueDate);
-             return { ...l, displayAmount: remaining, categoryKey: 'PAYABLE', dueDate, dueStatus, needsReminder };
+             return { ...l, displayAmount: remaining, categoryKey: 'LOAN', sourceType: 'LIABILITY' };
            }).filter(l => l.displayAmount > 0)
          : [];
 
-       // isLender customers (credit principal minus OUT payments - GENERAL)
-       const customerCreditors = (categoryFilter === 'ALL' || categoryFilter === 'GENERAL')
+       // isLender customers (credit principal - LOAN category)
+       const customerCreditors = (categoryFilter === 'ALL' || categoryFilter === 'LOAN')
          ? customers.filter(c => c.isLender).map(c => {
-             // Sum all OUT payments made to this lender customer (repayments)
              const paidOut = payments
                .filter(p => p.sourceId === c.id && p.type === 'OUT')
                .reduce((sum, p) => sum + p.amount, 0);
              const outstanding = Math.max(0, (c.creditPrincipal || 0) - paidOut);
-             const dueDate = getDueDate(c.id, 'PAYABLE');
-             const dueStatus = categorizeDueDate(dueDate);
-             const needsReminder = isDueWithin3Days(dueDate);
-             return { ...c, displayAmount: outstanding, name: `${c.name} (Lender)`, categoryKey: 'PAYABLE', dueDate, dueStatus, needsReminder };
+             return { ...c, displayAmount: outstanding, name: `${c.name} (Lender)`, categoryKey: 'LOAN', sourceType: 'CUSTOMER' };
+           }).filter(c => c.displayAmount > 0)
+         : [];
+
+       // GENERAL TRADE: customers we owe for general (breakdown.GENERAL < 0, not lenders)
+       const generalTradePayables = (categoryFilter === 'ALL' || categoryFilter === 'GENERAL')
+         ? customerAnalysis.filter(c => !c.isLender && (c.breakdown.GENERAL || 0) < 0).map(c => {
+             const remaining = Math.abs(c.breakdown.GENERAL || 0); // breakdown already net of payments
+             return { ...c, displayAmount: remaining, name: c.name, categoryKey: 'GENERAL', sourceType: 'CUSTOMER' };
            }).filter(c => c.displayAmount > 0)
          : [];
 
@@ -266,14 +287,34 @@ const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invo
                .filter(p => p.sourceId === c.id && p.type === 'OUT')
                .reduce((sum, p) => sum + p.amount, 0);
              const remaining = Math.max(0, Math.abs(c.breakdown.CHIT) - totalPaidOut);
-             const dueDate = getDueDate(c.id, 'PAYABLE');
-             const dueStatus = categorizeDueDate(dueDate);
-             const needsReminder = isDueWithin3Days(dueDate);
-             return { ...c, displayAmount: remaining, categoryKey: 'CHIT', dueDate, dueStatus, needsReminder };
+             return { ...c, displayAmount: remaining, categoryKey: 'CHIT', sourceType: 'CUSTOMER' };
            }).filter(c => c.displayAmount > 0)
          : [];
 
-       result = [...lenders, ...customerCreditors, ...debtorCustomers];
+       // Consolidate lenders + customerCreditors by party name to avoid duplicates (e.g. same person as Liability + Customer)
+       const normalizeName = (n: string) => (n || '').replace(/\s*\(lender\)\s*$/i, '').trim().toUpperCase();
+       const loanPayables = [...lenders, ...customerCreditors];
+       const mergedByName = new Map<string, { id: string; name: string; displayAmount: number; categoryKey: string; sourceType: 'CUSTOMER' | 'LIABILITY' }>();
+       for (const item of loanPayables) {
+         const baseName = normalizeName(item.name || item.providerName || '');
+         const displayName = (item.providerName || item.name || '').replace(/\s*\(lender\)\s*$/i, '').trim();
+         if (!baseName) continue;
+         const existing = mergedByName.get(baseName);
+         if (existing) {
+           existing.displayAmount += item.displayAmount || 0;
+         } else {
+           mergedByName.set(baseName, {
+             id: item.id,
+             name: displayName,
+             displayAmount: item.displayAmount || 0,
+             categoryKey: item.categoryKey || 'LOAN',
+             sourceType: item.sourceType || 'CUSTOMER'
+           });
+         }
+       }
+       const consolidatedLoan = Array.from(mergedByName.values()).filter(x => x.displayAmount > 0);
+
+       result = [...consolidatedLoan, ...generalTradePayables, ...debtorCustomers];
     }
 
     // Dynamic Sort
@@ -282,112 +323,110 @@ const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invo
        const valB = Math.abs(b.displayAmount);
        return sortOrder === 'DESC' ? valB - valA : valA - valB;
     });
-  }, [activeTab, customerAnalysis, customers, liabilities, payments, sortOrder, categoryFilter, dueDates]);
+  }, [activeTab, customerAnalysis, customers, liabilities, payments, sortOrder, categoryFilter]);
 
-  // Categorize data into 3 columns based on due status
-  const categorizedData = useMemo(() => {
-    return {
-      overdue: data.filter(item => item.dueStatus === 'OVERDUE'),
-      today: data.filter(item => item.dueStatus === 'TODAY'),
-      upcoming: data.filter(item => item.dueStatus === 'UPCOMING'),
-      noDueDate: data.filter(item => item.dueStatus === 'NONE')
-    };
-  }, [data]);
 
   const grandTotal = useMemo(() => data.reduce((acc, item) => acc + (Math.abs(item.displayAmount || 0)), 0), [data]);
 
-  // Render item card (reusable component for all columns)
-  const renderOutstandingRow = (item: any) => (
-    <tr key={item.id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors group">
-      <td className="px-4 py-3">
-        <div className="flex items-center gap-2">
-          {item.needsReminder && (
-            <i className="fas fa-bell text-amber-500 text-xs"></i>
-          )}
-          <div>
-            <div className="font-black text-sm text-slate-900 uppercase">{item.name || item.providerName}</div>
-            {categoryFilter !== 'ALL' && (
-              <span className="inline-block px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest bg-indigo-50 text-indigo-600 mt-1">
-                {categoryFilter}
-              </span>
-            )}
-          </div>
-        </div>
-      </td>
-      <td className="px-2 py-3 text-center">
-        {editingDueDate?.id === item.id && editingDueDate?.category === item.categoryKey ? (
-          <div className="flex gap-1 items-center justify-center">
-            <input 
-              type="date" 
-              className="px-1.5 py-1 border border-slate-300 rounded text-[11px] outline-none focus:border-indigo-500 w-28"
-              onChange={(e) => {
-                if (e.target.value) {
-                  const selectedDate = new Date(e.target.value).getTime();
-                  setDueDate(item.id, item.categoryKey, selectedDate, Math.abs(item.displayAmount));
-                }
-              }}
-              defaultValue={item.dueDate ? new Date(item.dueDate).toISOString().split('T')[0] : ''}
-            />
-            <button 
-              onClick={() => setEditingDueDate(null)}
-              className="px-1.5 py-1 bg-slate-200 rounded text-[10px] font-black hover:bg-slate-300"
-            >
-              <i className="fas fa-times"></i>
-            </button>
-          </div>
-        ) : (
-          <button 
-            onClick={() => setEditingDueDate({ id: item.id, category: item.categoryKey })}
-            className="flex items-center gap-1 px-2 py-1 bg-slate-50 rounded text-[11px] hover:bg-slate-100 transition font-bold text-slate-600 mx-auto"
-          >
-            <i className="fas fa-calendar-alt text-[9px]"></i>
-            {item.dueDate ? (
-              <span>{new Date(item.dueDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}</span>
-            ) : (
-              <span className="text-slate-400 text-[10px]">Set</span>
-            )}
-          </button>
-        )}
-      </td>
-      <td className="px-4 py-3 text-right">
-        <div className="text-base font-display font-black text-slate-900">
-          ₹{Math.abs(item.displayAmount).toLocaleString()}
-        </div>
-      </td>
-    </tr>
-  );
+  // For summaryOnly (Dashboard): use overallData when OVERALL tab, else data
+  const summaryTotal = useMemo(() => {
+    if (activeTab === 'OVERALL') return overallData.reduce((s, r) => s + Math.abs(r.net || 0), 0);
+    return grandTotal;
+  }, [activeTab, overallData, grandTotal]);
+  const summaryCount = useMemo(() => {
+    if (activeTab === 'OVERALL') return overallData.length;
+    return data.length;
+  }, [activeTab, overallData, data]);
+
+  // Chit + Royalty + Interest receivables for Excel export (one row per customer, amounts summed)
+  const chitRoyaltyInterestExportData = useMemo(() => {
+    return customerAnalysis
+      .map(c => {
+        const amount = (c.breakdown.CHIT || 0) + (c.breakdown.ROYALTY || 0) + (c.breakdown.INTEREST || 0);
+        return { customer: c.name || c.providerName || '', amount: Math.abs(amount) };
+      })
+      .filter(c => c.amount > 0)
+      .sort((a, b) => (sortOrder === 'DESC' ? b.amount - a.amount : a.amount - b.amount));
+  }, [customerAnalysis, sortOrder]);
+
+  const handleDownloadExcel = () => {
+    const rows = chitRoyaltyInterestExportData.map(item => ({
+      'Customer': item.customer,
+      'Amount': item.amount
+    }));
+    const total = chitRoyaltyInterestExportData.reduce((sum, i) => sum + i.amount, 0);
+    rows.push({ 'Customer': '', 'Amount': total });
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Chit Royalty Interest');
+    XLSX.writeFile(wb, `Receivables_Chit_Royalty_Interest_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
 
   return (
     <div className="space-y-6 animate-fadeIn">
       {/* Controls Header */}
       <div className="flex flex-col md:flex-row justify-between items-center gap-4">
         <div className="flex bg-slate-100 p-1.5 rounded-2xl w-full md:w-auto overflow-x-auto">
-          {['RECEIVABLES', 'MARKET_CAPITAL', 'ADVANCES', 'PAYABLES'].map(tab => (
-            <button 
-              key={tab} 
-              onClick={() => { setActiveTab(tab as any); setCategoryFilter('ALL'); }} 
+          {[
+            { key: 'OVERALL', label: 'Overall' },
+            { key: 'RECEIVABLES', label: 'Receivables' },
+            { key: 'PAYABLES', label: 'Payables' },
+            { key: 'ADVANCES', label: 'Advances' },
+            { key: 'MARKET_CAPITAL', label: 'Market Capital' },
+          ].map(tab => (
+            <button
+              key={tab.key}
+              onClick={() => { setActiveTab(tab.key as any); setCategoryFilter('ALL'); }}
               className={`px-6 py-3 text-xs font-black uppercase tracking-widest rounded-xl transition-all whitespace-nowrap ${
-                activeTab === tab 
-                  ? 'bg-slate-900 text-white shadow-md' 
+                activeTab === tab.key
+                  ? 'bg-slate-900 text-white shadow-md'
                   : 'text-slate-400 hover:text-slate-600'
               }`}
             >
-              {tab.replace('_', ' ')}
+              {tab.label}
             </button>
           ))}
         </div>
         
-        <div className="flex gap-3 w-full md:w-auto">
+        {activeTab !== 'OVERALL' && (
+        <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
+           {activeTab === 'RECEIVABLES' && (
+             <>
+               <button
+                 onClick={() => setCategoryFilter(categoryFilter === 'CHIT_ROYALTY_INTEREST' ? 'ALL' : 'CHIT_ROYALTY_INTEREST')}
+                 className={`px-5 py-3 rounded-xl text-xs font-black uppercase tracking-widest transition-all flex items-center gap-2 whitespace-nowrap ${
+                   categoryFilter === 'CHIT_ROYALTY_INTEREST'
+                     ? 'bg-indigo-600 text-white shadow-lg'
+                     : 'bg-indigo-50 text-indigo-600 border-2 border-indigo-200 hover:bg-indigo-100'
+                 }`}
+                 title="Filter for mobile screenshot — Chit, Royalty & Interest only"
+               >
+                 <i className="fas fa-mobile-alt"></i>
+                 Chit + Royalty + Interest
+               </button>
+               <button
+                 onClick={handleDownloadExcel}
+                 className="px-5 py-3 rounded-xl text-xs font-black uppercase tracking-widest flex items-center gap-2 whitespace-nowrap bg-emerald-50 text-emerald-700 border-2 border-emerald-200 hover:bg-emerald-100"
+                 title="Download Chit + Royalty + Interest receivables as Excel"
+               >
+                 <i className="fas fa-file-excel"></i>
+                 Download Excel
+               </button>
+             </>
+           )}
            <select 
              className="px-4 py-3 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-700 uppercase tracking-widest outline-none focus:border-indigo-500"
-             value={categoryFilter}
+             value={categoryFilter === 'CHIT_ROYALTY_INTEREST' ? 'CHIT_ROYALTY_INTEREST' : categoryFilter}
              onChange={(e) => setCategoryFilter(e.target.value as any)}
            >
              <option value="ALL">All Categories</option>
+             {activeTab === 'RECEIVABLES' && <option value="CHIT_ROYALTY_INTEREST">Chit + Royalty + Interest</option>}
              {(activeTab === 'RECEIVABLES' || activeTab === 'PAYABLES' || activeTab === 'ADVANCES') && <option value="ROYALTY">Royalty Only</option>}
              <option value="INTEREST">{activeTab === 'MARKET_CAPITAL' ? 'Market Capital' : 'Interest Only'}</option>
              <option value="CHIT">Chit Fund Only</option>
              {(activeTab === 'RECEIVABLES' || activeTab === 'PAYABLES' || activeTab === 'ADVANCES') && <option value="GENERAL">General Trade</option>}
+             {activeTab === 'RECEIVABLES' && <option value="PRINCIPAL">Loan Principal</option>}
+             {activeTab === 'PAYABLES' && <option value="LOAN">Loan (Loan Principal)</option>}
            </select>
 
            <button 
@@ -397,209 +436,346 @@ const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invo
               <i className={`fas fa-sort-amount-${sortOrder === 'ASC' ? 'up' : 'down'}`}></i>
               {sortOrder === 'ASC' ? 'Low-High' : 'High-Low'}
            </button>
+           <button
+             onClick={() => setListViewMode(!listViewMode)}
+             className={`px-4 py-3 rounded-xl text-xs font-black uppercase tracking-widest flex items-center gap-2 ${
+               listViewMode ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+             }`}
+             title="List view — all items in one scroll, mobile-friendly"
+           >
+             <i className="fas fa-list"></i>
+             List View
+           </button>
         </div>
+        )}
       </div>
 
       {/* Summary Cards - Only show in Dashboard summary view */}
+      {/* ── OVERALL TAB ─────────────────────────────────────────────── */}
+      {!summaryOnly && activeTab === 'OVERALL' && (
+        <div className="bg-white rounded-[2rem] border border-slate-200 shadow-xl overflow-hidden">
+          {/* Summary strip */}
+          <div className="grid grid-cols-2 md:grid-cols-4 border-b border-slate-100">
+            {[
+              { label: 'Total Receivable', value: overallData.filter(r => r.net > 0).reduce((s, r) => s + r.net, 0), cls: 'text-emerald-600' },
+              { label: 'Total Payable',    value: overallData.filter(r => r.net < 0).reduce((s, r) => s + Math.abs(r.net), 0), cls: 'text-rose-600' },
+              { label: 'Market Capital',   value: overallData.reduce((s, r) => s + (r.principal || 0), 0), cls: 'text-blue-600' },
+              { label: 'Net Position',     value: overallData.reduce((s, r) => s + r.net, 0), cls: overallData.reduce((s, r) => s + r.net, 0) >= 0 ? 'text-emerald-600' : 'text-rose-600' },
+            ].map(card => (
+              <div key={card.label} className="p-6 border-r border-slate-100 last:border-0">
+                <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">{card.label}</div>
+                <div className={`text-xl font-display font-black tracking-tighter ${card.cls}`}>{Math.abs(card.value).toLocaleString()}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* View mode: Party summary vs Individual Invoices */}
+          <div className="flex items-center justify-between gap-4 px-6 py-3 border-b border-slate-100 bg-slate-50/60 flex-wrap">
+            <div className="flex items-center gap-2">
+              <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">View</span>
+              <button onClick={() => setOverallViewMode('PARTY')} className={`px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest border transition-all ${overallViewMode === 'PARTY' ? 'bg-indigo-600 text-white border-indigo-600' : 'border-slate-300 text-slate-500 bg-white hover:border-slate-400'}`}>
+                <i className="fas fa-users mr-1"></i>By Party
+              </button>
+              <button onClick={() => setOverallViewMode('INVOICE')} className={`px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest border transition-all ${overallViewMode === 'INVOICE' ? 'bg-indigo-600 text-white border-indigo-600' : 'border-slate-300 text-slate-500 bg-white hover:border-slate-400'}`}>
+                <i className="fas fa-file-invoice mr-1"></i>Individual Bills
+              </button>
+            </div>
+            {overallViewMode === 'PARTY' && (
+            <div className="flex items-center gap-2">
+            <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest mr-1">Columns</span>
+            {ALL_OVERALL_COLS.map(c => {
+              const on = visibleCols.has(c.col);
+              return (
+                <button key={c.col} onClick={() => setVisibleCols(prev => {
+                    const next = new Set(prev);
+                    on ? next.delete(c.col) : next.add(c.col);
+                    return next;
+                  })}
+                  className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest border transition-all ${
+                    on
+                      ? `border-current ${c.cls} bg-white shadow-sm`
+                      : 'border-dashed border-slate-300 text-slate-300 bg-white hover:border-slate-400 hover:text-slate-400'
+                  }`}
+                >
+                  {on ? <><i className="fas fa-check mr-1"></i>{c.label}</> : <><i className="fas fa-plus mr-1"></i>{c.label}</>}
+                </button>
+              );
+            })}
+            </div>
+            )}
+          </div>
+
+          {/* Table — Party summary or Individual Bills */}
+          <div className="overflow-x-auto">
+            {overallViewMode === 'INVOICE' ? (
+              /* Individual Bills view: each invoice as a row with date, voucher, amount */
+              <table className="min-w-full text-xs">
+                <thead className="bg-slate-50 border-b border-slate-200">
+                  <tr>
+                    <th className="px-6 py-4 text-left text-[9px] font-black uppercase tracking-widest text-slate-500">Date</th>
+                    <th className="px-6 py-4 text-left text-[9px] font-black uppercase tracking-widest text-slate-500">Type / Voucher</th>
+                    <th className="px-6 py-4 text-left text-[9px] font-black uppercase tracking-widest text-slate-500 w-48">Party</th>
+                    <th className="px-6 py-4 text-right text-[9px] font-black uppercase tracking-widest text-rose-600">Amount</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {invoiceLevelData.length === 0 ? (
+                    <tr><td colSpan={4} className="px-6 py-12 text-center text-xs font-black text-slate-300 uppercase tracking-widest">No outstanding invoices</td></tr>
+                  ) : invoiceLevelData.map(row => (
+                    <tr key={row.id} className="hover:bg-slate-50 transition-colors cursor-pointer" onClick={() => onDrillDown(row.partyId, row.sourceType === 'LIABILITY' ? 'LENDER' : 'CUSTOMER')}>
+                      <td className="px-6 py-4 font-mono text-slate-700">{row.dateStr}</td>
+                      <td className="px-6 py-4">
+                        <span className="inline-flex items-center gap-1.5">
+                          <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase ${row.isOut ? 'bg-rose-100 text-rose-600' : 'bg-emerald-100 text-emerald-600'}`}>{row.type}</span>
+                          <span className="font-mono text-slate-600">{row.voucher}</span>
+                        </span>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="font-black text-slate-800 uppercase text-xs">{row.partyName}</div>
+                        <div className={`text-[8px] font-black uppercase tracking-wider ${row.sourceType === 'LIABILITY' ? 'text-rose-400' : 'text-indigo-400'}`}>
+                          {row.sourceType === 'LIABILITY' ? 'Lender / Bank' : 'Customer'}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 text-right">
+                        <span className={`font-mono font-bold ${row.isOut ? 'text-rose-500' : 'text-emerald-600'}`}>
+                          {row.isOut ? '−' : ''}{Math.abs(row.amount).toLocaleString()}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                {invoiceLevelData.length > 0 && (
+                  <tfoot className="bg-slate-900 text-white">
+                    <tr>
+                      <td colSpan={3} className="px-6 py-4">
+                        <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">{invoiceLevelData.length} Bills</div>
+                      </td>
+                      <td className="px-6 py-4 text-right font-display font-black">
+                        {invoiceLevelData.reduce((s, r) => s + (r.isOut ? -r.amount : r.amount), 0).toLocaleString()}
+                      </td>
+                    </tr>
+                  </tfoot>
+                )}
+              </table>
+            ) : (() => {
+              const activeCols = ALL_OVERALL_COLS.filter(c => visibleCols.has(c.col));
+              const colSpanTotal = 2 + activeCols.length; // Party + active cols + Net
+
+              // Net = sum of currently visible columns only
+              const calcVisibleNet = (row: any) =>
+                activeCols.reduce((s, c) => s + (row[c.col] || 0), 0);
+
+              // Sort by actual numeric value so positives rank high and negatives rank low
+              const sorted = [...overallData].map(row => ({
+                ...row,
+                visibleNet: calcVisibleNet(row),
+              })).sort((a, b) => {
+                const va = overallSort.col === 'net' ? a.visibleNet : (a[overallSort.col] || 0);
+                const vb = overallSort.col === 'net' ? b.visibleNet : (b[overallSort.col] || 0);
+                return overallSort.dir === 'DESC' ? vb - va : va - vb;
+              });
+
+              return (
+              <table className="min-w-full text-xs">
+                <thead className="bg-slate-50 border-b border-slate-200">
+                  <tr>
+                    <th className="px-6 py-4 text-left text-[9px] font-black uppercase tracking-widest text-slate-500 w-48">Party</th>
+                    {activeCols.map(h => {
+                      const active = overallSort.col === h.col;
+                      return (
+                        <th key={h.col}
+                          onClick={() => setOverallSort(prev => prev.col === h.col ? { col: h.col, dir: prev.dir === 'DESC' ? 'ASC' : 'DESC' } : { col: h.col, dir: 'DESC' })}
+                          className={`px-4 py-4 text-right text-[9px] font-black uppercase tracking-widest cursor-pointer select-none hover:bg-slate-100 transition-colors ${h.cls}`}
+                        >
+                          <span className="flex items-center justify-end gap-1">
+                            {h.label}
+                            {active
+                              ? <i className={`fas fa-sort-amount-${overallSort.dir === 'DESC' ? 'down' : 'up'} text-[8px]`}></i>
+                              : <i className="fas fa-sort text-[8px] opacity-20"></i>
+                            }
+                          </span>
+                        </th>
+                      );
+                    })}
+                    {/* Net always visible */}
+                    <th onClick={() => setOverallSort(prev => prev.col === 'net' ? { col: 'net', dir: prev.dir === 'DESC' ? 'ASC' : 'DESC' } : { col: 'net', dir: 'DESC' })}
+                      className="px-6 py-4 text-right text-[9px] font-black uppercase tracking-widest cursor-pointer select-none hover:bg-slate-100 transition-colors text-slate-800">
+                      <span className="flex items-center justify-end gap-1">
+                        Net
+                        {overallSort.col === 'net'
+                          ? <i className={`fas fa-sort-amount-${overallSort.dir === 'DESC' ? 'down' : 'up'} text-[8px]`}></i>
+                          : <i className="fas fa-sort text-[8px] opacity-20"></i>
+                        }
+                      </span>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {sorted.length === 0 ? (
+                    <tr><td colSpan={colSpanTotal} className="px-6 py-12 text-center text-xs font-black text-slate-300 uppercase tracking-widest">No outstanding balances found</td></tr>
+                  ) : sorted.map(row => (
+                    <tr key={row.id} className="hover:bg-slate-50 transition-colors cursor-pointer" onClick={() => onDrillDown(row.id, row.sourceType === 'LIABILITY' ? 'LENDER' : 'CUSTOMER')}>
+                      <td className="px-6 py-4">
+                        <div className="font-black text-slate-800 uppercase text-xs">{row.name}</div>
+                        {row.phone && <div className="text-[9px] text-slate-400 mt-0.5">{row.phone}</div>}
+                        <div className={`text-[8px] font-black uppercase tracking-wider mt-0.5 ${row.sourceType === 'LIABILITY' ? 'text-rose-400' : 'text-indigo-400'}`}>
+                          {row.sourceType === 'LIABILITY' ? 'Lender / Bank' : 'Customer'}
+                        </div>
+                      </td>
+                      {activeCols.map(c => {
+                        const val = row[c.col] || 0;
+                        return (
+                          <td key={c.col} className="px-4 py-4 text-right font-mono font-bold">
+                            {val !== 0 ? (
+                              <span className={val < 0 ? 'text-rose-500' : c.cls}>
+                                {val < 0 ? '−' : ''}{Math.abs(val).toLocaleString()}
+                              </span>
+                            ) : <span className="text-slate-200">—</span>}
+                          </td>
+                        );
+                      })}
+                      <td className="px-6 py-4 text-right">
+                        <span className={`font-display font-black text-sm ${row.visibleNet < 0 ? 'text-rose-600' : 'text-slate-900'}`}>
+                          {row.visibleNet < 0 ? '−' : ''}{Math.abs(row.visibleNet).toLocaleString()}
+                        </span>
+                        <div className={`text-[8px] font-black uppercase ${row.visibleNet >= 0 ? 'text-emerald-500' : 'text-rose-400'}`}>{row.visibleNet >= 0 ? 'Dr' : 'Cr'}</div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                {/* Grand Total Row */}
+                {overallData.length > 0 && (
+                  <tfoot className="bg-slate-900 text-white">
+                    <tr>
+                      <td className="px-6 py-4">
+                        <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">{overallData.length} Parties</div>
+                        <div className="text-[8px] font-black uppercase tracking-widest text-slate-600 mt-0.5">Grand Total</div>
+                      </td>
+                      {activeCols.map(col => (
+                        <td key={col.col} className="px-4 py-4 text-right">
+                          <div className={`font-mono font-black ${col.footCls}`}>{sorted.reduce((s, r) => s + (r[col.col] || 0), 0).toLocaleString()}</div>
+                          <div className="text-[8px] font-black uppercase tracking-widest text-slate-600 mt-0.5">{col.label}</div>
+                        </td>
+                      ))}
+                      <td className="px-6 py-4 text-right">
+                        {(() => {
+                          const n = sorted.reduce((s, r) => s + r.visibleNet, 0);
+                          return <>
+                            <div className={`font-display font-black text-sm ${n < 0 ? 'text-rose-300' : 'text-white'}`}>{n < 0 ? '−' : ''}{Math.abs(n).toLocaleString()}</div>
+                            <div className={`text-[8px] font-black uppercase mt-0.5 ${n >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{n >= 0 ? 'Dr' : 'Cr'}</div>
+                          </>;
+                        })()}
+                      </td>
+                    </tr>
+                  </tfoot>
+                )}
+              </table>
+              );
+            })()}
+          </div>
+        </div>
+      )}
+
       {summaryOnly && (
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <div className="bg-gradient-to-br from-rose-50 to-rose-100 border-2 border-rose-200 rounded-2xl p-4">
-            <div className="flex items-center gap-2 mb-2">
-              <i className="fas fa-exclamation-circle text-rose-600 text-lg"></i>
-              <h3 className="text-[10px] font-black uppercase tracking-widest text-rose-600">Overdue</h3>
-            </div>
-            <div className="text-2xl font-display font-black text-rose-900">₹{categorizedData.overdue.reduce((sum, item) => sum + Math.abs(item.displayAmount), 0).toLocaleString()}</div>
-            <div className="text-[9px] font-black text-rose-600 mt-1">{categorizedData.overdue.length} items</div>
-          </div>
-
-          <div className="bg-gradient-to-br from-amber-50 to-amber-100 border-2 border-amber-200 rounded-2xl p-4">
-            <div className="flex items-center gap-2 mb-2">
-              <i className="fas fa-clock text-amber-600 text-lg"></i>
-              <h3 className="text-[10px] font-black uppercase tracking-widest text-amber-600">Due Today</h3>
-            </div>
-            <div className="text-2xl font-display font-black text-amber-900">₹{categorizedData.today.reduce((sum, item) => sum + Math.abs(item.displayAmount), 0).toLocaleString()}</div>
-            <div className="text-[9px] font-black text-amber-600 mt-1">{categorizedData.today.length} items</div>
-          </div>
-
-          <div className="bg-gradient-to-br from-blue-50 to-blue-100 border-2 border-blue-200 rounded-2xl p-4">
-            <div className="flex items-center gap-2 mb-2">
-              <i className="fas fa-calendar-check text-blue-600 text-lg"></i>
-              <h3 className="text-[10px] font-black uppercase tracking-widest text-blue-600">Upcoming</h3>
-            </div>
-            <div className="text-2xl font-display font-black text-blue-900">₹{categorizedData.upcoming.reduce((sum, item) => sum + Math.abs(item.displayAmount), 0).toLocaleString()}</div>
-            <div className="text-[9px] font-black text-blue-600 mt-1">{categorizedData.upcoming.length} items</div>
-          </div>
-
-          <div className="bg-gradient-to-br from-slate-50 to-slate-100 border-2 border-slate-200 rounded-2xl p-4">
-            <div className="flex items-center gap-2 mb-2">
-              <i className="fas fa-question-circle text-slate-600 text-lg"></i>
-              <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-600">No Due Date</h3>
-            </div>
-            <div className="text-2xl font-display font-black text-slate-900">₹{categorizedData.noDueDate.reduce((sum, item) => sum + Math.abs(item.displayAmount), 0).toLocaleString()}</div>
-            <div className="text-[9px] font-black text-slate-600 mt-1">{categorizedData.noDueDate.length} items</div>
-          </div>
-        </div>
-      )}
-
-      {/* 3-Column Layout - Only show if not summary only */}
-      {!summaryOnly && (
-        <>
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* OVERDUE Column */}
-        <div className="space-y-4">
-          <div className="bg-gradient-to-r from-rose-600 to-rose-700 rounded-2xl p-4 shadow-lg">
-            <div className="flex items-center justify-between text-white">
-              <div className="flex items-center gap-3">
-                <i className="fas fa-exclamation-triangle text-2xl"></i>
-                <div>
-                  <h3 className="text-xs font-black uppercase tracking-widest">Overdue</h3>
-                  <p className="text-[9px] opacity-80 font-bold">Past Due Date</p>
-                </div>
-              </div>
-              <div className="text-right">
-                <div className="text-xl font-display font-black">₹{categorizedData.overdue.reduce((sum, item) => sum + Math.abs(item.displayAmount), 0).toLocaleString()}</div>
-                <div className="text-[8px] opacity-80 font-bold">{categorizedData.overdue.length} items</div>
-              </div>
-            </div>
-          </div>
-          <div className="max-h-[600px] overflow-auto custom-scrollbar">
-            {categorizedData.overdue.length > 0 ? (
-              <table className="w-full bg-white border border-slate-200 rounded-lg overflow-hidden">
-                <thead className="bg-slate-50 border-b border-slate-200">
-                  <tr>
-                    <th className="px-4 py-2 text-left text-[10px] font-black uppercase tracking-widest text-slate-600">Customer</th>
-                    <th className="px-2 py-2 text-center text-[10px] font-black uppercase tracking-widest text-slate-600 w-24">Due Date</th>
-                    <th className="px-4 py-2 text-right text-[10px] font-black uppercase tracking-widest text-slate-600">Amount</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {categorizedData.overdue.map(renderOutstandingRow)}
-                </tbody>
-              </table>
-            ) : (
-              <div className="bg-slate-50 rounded-xl p-8 text-center border-2 border-dashed border-slate-200">
-                <i className="fas fa-check-circle text-4xl text-slate-300 mb-3"></i>
-                <p className="text-xs font-black text-slate-400 uppercase tracking-widest">No Overdue Items</p>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* DUE TODAY Column */}
-        <div className="space-y-4">
-          <div className="bg-gradient-to-r from-amber-500 to-amber-600 rounded-2xl p-4 shadow-lg">
-            <div className="flex items-center justify-between text-white">
-              <div className="flex items-center gap-3">
-                <i className="fas fa-clock text-2xl"></i>
-                <div>
-                  <h3 className="text-xs font-black uppercase tracking-widest">Due Today</h3>
-                  <p className="text-[9px] opacity-80 font-bold">Action Required</p>
-                </div>
-              </div>
-              <div className="text-right">
-                <div className="text-xl font-display font-black">₹{categorizedData.today.reduce((sum, item) => sum + Math.abs(item.displayAmount), 0).toLocaleString()}</div>
-                <div className="text-[8px] opacity-80 font-bold">{categorizedData.today.length} items</div>
-              </div>
-            </div>
-          </div>
-          <div className="max-h-[600px] overflow-auto custom-scrollbar">
-            {categorizedData.today.length > 0 ? (
-              <table className="w-full bg-white border border-slate-200 rounded-lg overflow-hidden">
-                <thead className="bg-slate-50 border-b border-slate-200">
-                  <tr>
-                    <th className="px-4 py-2 text-left text-[10px] font-black uppercase tracking-widest text-slate-600">Customer</th>
-                    <th className="px-2 py-2 text-center text-[10px] font-black uppercase tracking-widest text-slate-600 w-24">Due Date</th>
-                    <th className="px-4 py-2 text-right text-[10px] font-black uppercase tracking-widest text-slate-600">Amount</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {categorizedData.today.map(renderOutstandingRow)}
-                </tbody>
-              </table>
-            ) : (
-              <div className="bg-slate-50 rounded-xl p-8 text-center border-2 border-dashed border-slate-200">
-                <i className="fas fa-calendar-check text-4xl text-slate-300 mb-3"></i>
-                <p className="text-xs font-black text-slate-400 uppercase tracking-widest">No Items Due Today</p>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* UPCOMING Column */}
-        <div className="space-y-4">
-          <div className="bg-gradient-to-r from-blue-600 to-blue-700 rounded-2xl p-4 shadow-lg">
-            <div className="flex items-center justify-between text-white">
-              <div className="flex items-center gap-3">
-                <i className="fas fa-calendar-alt text-2xl"></i>
-                <div>
-                  <h3 className="text-xs font-black uppercase tracking-widest">Upcoming</h3>
-                  <p className="text-[9px] opacity-80 font-bold">Future Due Dates</p>
-                </div>
-              </div>
-              <div className="text-right">
-                <div className="text-xl font-display font-black">₹{categorizedData.upcoming.reduce((sum, item) => sum + Math.abs(item.displayAmount), 0).toLocaleString()}</div>
-                <div className="text-[8px] opacity-80 font-bold">{categorizedData.upcoming.length} items</div>
-              </div>
-            </div>
-          </div>
-          <div className="max-h-[600px] overflow-auto custom-scrollbar">
-            {categorizedData.upcoming.length > 0 ? (
-              <table className="w-full bg-white border border-slate-200 rounded-lg overflow-hidden">
-                <thead className="bg-slate-50 border-b border-slate-200">
-                  <tr>
-                    <th className="px-4 py-2 text-left text-[10px] font-black uppercase tracking-widest text-slate-600">Customer</th>
-                    <th className="px-2 py-2 text-center text-[10px] font-black uppercase tracking-widest text-slate-600 w-24">Due Date</th>
-                    <th className="px-4 py-2 text-right text-[10px] font-black uppercase tracking-widest text-slate-600">Amount</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {categorizedData.upcoming.map(renderOutstandingRow)}
-                </tbody>
-              </table>
-            ) : (
-              <div className="bg-slate-50 rounded-xl p-8 text-center border-2 border-dashed border-slate-200">
-                <i className="fas fa-inbox text-4xl text-slate-300 mb-3"></i>
-                <p className="text-xs font-black text-slate-400 uppercase tracking-widest">No Upcoming Items</p>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Items Without Due Date */}
-      {categorizedData.noDueDate.length > 0 && (
-        <div className="bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200 p-6">
-          <h3 className="text-sm font-black uppercase tracking-widest text-slate-600 mb-4 flex items-center gap-2">
-            <i className="fas fa-question-circle"></i>
-            Items Without Due Date ({categorizedData.noDueDate.length})
-          </h3>
-          <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
-            <table className="w-full">
-              <thead className="bg-slate-50 border-b border-slate-200">
-                <tr>
-                  <th className="px-4 py-2 text-left text-[10px] font-black uppercase tracking-widest text-slate-600">Customer</th>
-                  <th className="px-2 py-2 text-center text-[10px] font-black uppercase tracking-widest text-slate-600 w-24">Due Date</th>
-                  <th className="px-4 py-2 text-right text-[10px] font-black uppercase tracking-widest text-slate-600">Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                {categorizedData.noDueDate.map(renderOutstandingRow)}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* Total Summary */}
-      <div className="bg-slate-900 text-white rounded-2xl p-6 shadow-xl">
-        <div className="flex justify-between items-center">
+        <div className="bg-slate-900 text-white rounded-2xl p-6 shadow-xl">
           <div className="flex items-center gap-3">
             <i className="fas fa-chart-line text-2xl opacity-80"></i>
-            <h3 className="text-sm font-black uppercase tracking-widest opacity-80">Grand Total Outstanding</h3>
+            <div>
+              <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-400">Outstanding Total</h3>
+              <div className="text-2xl font-display font-black">{summaryTotal.toLocaleString()}</div>
+              <div className="text-[9px] font-black text-slate-400 mt-0.5">{summaryCount} items</div>
+            </div>
           </div>
-          <div className="text-3xl font-display font-black">₹{grandTotal.toLocaleString()}</div>
         </div>
-      </div>
+      )}
+
+      {/* List View (mobile-friendly) — single scrollable list */}
+      {!summaryOnly && activeTab !== 'OVERALL' && listViewMode && (
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-xl overflow-hidden">
+          <div className="p-4 bg-slate-50 border-b border-slate-200">
+            <h3 className="text-xs font-black uppercase tracking-widest text-slate-600">All Items ({data.length}) — Scroll to view</h3>
+          </div>
+          <div className="divide-y divide-slate-100 max-h-[75vh] overflow-y-auto">
+            {data.map((item, idx) => (
+              <div key={`${item.id}-${item.categoryKey}-${idx}`} className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-slate-50">
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-black text-slate-900 uppercase truncate">{item.name || item.providerName}</div>
+                </div>
+                <div className="text-base font-display font-black text-slate-900 shrink-0">{Math.abs(item.displayAmount || 0).toLocaleString()}</div>
+              </div>
+            ))}
+            {data.length === 0 ? (
+              <div className="px-4 py-12 text-center text-sm font-bold text-slate-400">No items</div>
+            ) : null}
+          </div>
+          <div className="p-4 bg-slate-900 text-white border-t border-slate-700">
+            <div className="flex justify-between items-center">
+              <span className="text-xs font-black uppercase tracking-widest opacity-80">Grand Total</span>
+              <span className="text-xl font-display font-black">{grandTotal.toLocaleString()}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Single table layout — all outstanding items (Customer + Amount) */}
+      {!summaryOnly && activeTab !== 'OVERALL' && !listViewMode && (
+        <>
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl overflow-hidden">
+            <div className="p-4 bg-slate-50 border-b border-slate-200">
+              <h3 className="text-sm font-black uppercase tracking-widest text-slate-600">
+                Outstanding Items ({data.length})
+              </h3>
+            </div>
+            <div className="max-h-[600px] overflow-auto custom-scrollbar overflow-x-auto">
+              {data.length > 0 ? (
+                <table className="w-full min-w-[260px]">
+                  <thead className="bg-slate-50 border-b border-slate-200">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-[10px] font-black uppercase tracking-widest text-slate-600">Customer</th>
+                      <th className="px-4 py-3 text-right text-[10px] font-black uppercase tracking-widest text-slate-600">Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.map((item, idx) => (
+                      <tr key={`${item.id}-${item.categoryKey}-${idx}`} className="border-b border-slate-100 hover:bg-slate-50 transition-colors cursor-pointer" onClick={() => onDrillDown(item.id, (item.sourceType === 'LIABILITY' ? 'LENDER' : 'CUSTOMER'))}>
+                        <td className="px-4 py-3 min-w-0">
+                          <div className="min-w-0">
+                            <div className="font-black text-sm text-slate-900 uppercase break-words">{item.name || item.providerName}</div>
+                            {categoryFilter !== 'ALL' && (
+                              <span className="inline-block px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest bg-indigo-50 text-indigo-600 mt-1">
+                                {categoryFilter === 'CHIT_ROYALTY_INTEREST' ? 'Chit + Royalty + Interest' : categoryFilter}
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <div className="text-base font-display font-black text-slate-900">
+                            {Math.abs(item.displayAmount).toLocaleString()}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="bg-slate-50 rounded-xl p-8 text-center border-2 border-dashed border-slate-200 m-4">
+                  <i className="fas fa-check-circle text-4xl text-slate-300 mb-3"></i>
+                  <p className="text-xs font-black text-slate-400 uppercase tracking-widest">No outstanding items</p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Total Summary */}
+          <div className="bg-slate-900 text-white rounded-2xl p-6 shadow-xl">
+            <div className="flex justify-between items-center">
+              <div className="flex items-center gap-3">
+                <i className="fas fa-chart-line text-2xl opacity-80"></i>
+                <h3 className="text-sm font-black uppercase tracking-widest opacity-80">Grand Total Outstanding</h3>
+              </div>
+              <div className="text-3xl font-display font-black">{grandTotal.toLocaleString()}</div>
+            </div>
+          </div>
         </>
       )}
     </div>
@@ -607,3 +783,4 @@ const OutstandingReports: React.FC<OutstandingReportsProps> = ({ customers, invo
 };
 
 export default OutstandingReports;
+

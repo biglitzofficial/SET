@@ -17,6 +17,7 @@ import chitGroupRoutes from './routes/chitGroups.js';
 import settingsRoutes from './routes/settings.js';
 import reportRoutes from './routes/reports.js';
 import dueDatesRoutes from './routes/dueDates.js';
+import journalRoutes from './routes/journals.js';
 
 // Import email service
 import { testEmailConnection } from './config/email.js';
@@ -149,6 +150,7 @@ app.use('/api/chit-groups', chitGroupRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/due-dates', dueDatesRoutes);
+app.use('/api/journals', journalRoutes);
 
 // ============================================
 // ERROR HANDLING MIDDLEWARE

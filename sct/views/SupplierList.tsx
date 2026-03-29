@@ -1,4 +1,4 @@
-
+﻿
 import React, { useState } from 'react';
 import { Supplier, Payment } from '../types';
 
@@ -40,7 +40,7 @@ const SupplierList: React.FC<SupplierListProps> = ({ suppliers, setSuppliers, pa
               </div>
               <div className="text-right">
                 <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Outstanding</div>
-                <div className="text-2xl font-display font-black text-rose-600 italic tracking-tighter">₹{sup.outstanding.toLocaleString()}</div>
+                <div className="text-2xl font-display font-black text-rose-600 italic tracking-tighter">{sup.outstanding.toLocaleString()}</div>
               </div>
             </div>
             <h3 className="font-display font-black text-slate-900 text-xl uppercase italic tracking-tighter mb-1">{sup.name}</h3>
@@ -70,7 +70,7 @@ const SupplierList: React.FC<SupplierListProps> = ({ suppliers, setSuppliers, pa
                 <input required type="text" className="w-full border-2 border-slate-100 p-3 rounded-2xl bg-slate-50 text-sm font-bold outline-none focus:border-indigo-500" value={formData.phone} onChange={e => setFormData({...formData, phone: e.target.value})} />
               </div>
               <div>
-                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Opening Outstanding (₹)</label>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Opening Outstanding ()</label>
                 <input type="number" className="w-full border-2 border-slate-100 p-3 rounded-2xl bg-slate-50 text-xl font-display font-black text-rose-600 outline-none focus:border-indigo-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={formData.outstanding} onChange={e => setFormData({...formData, outstanding: Number(e.target.value)})} />
               </div>
               <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
@@ -86,3 +86,4 @@ const SupplierList: React.FC<SupplierListProps> = ({ suppliers, setSuppliers, pa
 };
 
 export default SupplierList;
+

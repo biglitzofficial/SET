@@ -1,7 +1,7 @@
 import express from 'express';
 import { body, validationResult } from 'express-validator';
 import { db, COLLECTIONS } from '../config/firebase.js';
-import { authenticate, checkPermission } from '../middleware/auth.js';
+import { authenticate, checkPermission, assertStaffCanEditOrDelete } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -101,6 +101,8 @@ router.put('/:id', [
     if (!doc.exists) {
       return res.status(404).json({ error: { message: 'Chit group not found' } });
     }
+    const err = assertStaffCanEditOrDelete(req, doc.data(), 'edit');
+    if (err) return res.status(err.status).json({ error: { message: err.message } });
 
     const updateData = {
       ...req.body,
@@ -181,11 +183,14 @@ router.delete('/:id/auctions/:auctionId', [
     }
 
     const chitGroup = doc.data();
-    const updatedAuctions = chitGroup.auctions.filter(a => a.id !== req.params.auctionId);
-
-    if (updatedAuctions.length === chitGroup.auctions.length) {
+    const auction = chitGroup.auctions?.find(a => a.id === req.params.auctionId);
+    if (!auction) {
       return res.status(404).json({ error: { message: 'Auction not found' } });
     }
+    const delErr = assertStaffCanEditOrDelete(req, auction, 'delete');
+    if (delErr) return res.status(delErr.status).json({ error: { message: delErr.message } });
+
+    const updatedAuctions = chitGroup.auctions.filter(a => a.id !== req.params.auctionId);
 
     await docRef.update({
       auctions: updatedAuctions,
@@ -212,6 +217,8 @@ router.delete('/:id', [
     if (!doc.exists) {
       return res.status(404).json({ error: { message: 'Chit group not found' } });
     }
+    const delErr = assertStaffCanEditOrDelete(req, doc.data(), 'delete');
+    if (delErr) return res.status(delErr.status).json({ error: { message: delErr.message } });
 
     await docRef.delete();
 

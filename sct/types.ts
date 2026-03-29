@@ -81,6 +81,7 @@ export interface Investment {
   amountInvested: number;
   currentValue?: number;
   expectedMaturityValue?: number;
+  monthlyPayable?: number; // Monthly installment / interest payout (for FD, LIC, SIP etc.)
   startDate: number;
   maturityDate?: number;
   status: 'ACTIVE' | 'MATURED' | 'CLOSED';
@@ -143,7 +144,7 @@ export interface ChitGroup {
   status: 'ACTIVE' | 'COMPLETED';
 }
 
-export type InvoiceType = 'ROYALTY' | 'INTEREST' | 'CHIT' | 'INTEREST_OUT';
+export type InvoiceType = 'ROYALTY' | 'INTEREST' | 'CHIT' | 'INTEREST_OUT' | 'GENERAL';
 
 export interface Invoice {
   id: string;
@@ -170,6 +171,8 @@ export interface Payment {
   id: string;
   type: 'IN' | 'OUT';
   voucherType: VoucherType;
+  voucherNumber?: string;   // e.g. VCH-202602-001 — auto-assigned on creation
+  receiptNumber?: string;   // e.g. RCT-202602-001 — only for IN receipts
   sourceId: string;
   sourceName: string;
   amount: number;
@@ -181,6 +184,28 @@ export interface Payment {
   category: string; 
   businessUnit?: string; // For "General Category" tracking (e.g., FITO6, FITOBOWL)
   relatedAuctionId?: string; // Links this payment to a specific Chit Auction if paid directly
+  excludeFromPL?: boolean; // When true, excluded from P&L and balance sheet expense calculation
+}
+
+export interface JournalLine {
+  id: string;
+  accountHead: string;
+  description?: string;
+  debit: number;
+  credit: number;
+}
+
+export interface JournalEntry {
+  id: string;
+  journalNumber: string;   // e.g. JNL-202602-001
+  date: number;
+  narration: string;
+  lines: JournalLine[];
+  totalDebit: number;
+  totalCredit: number;
+  isBalanced: boolean;
+  createdAt: number;
+  createdBy?: string;
 }
 
 export interface Liability {
@@ -205,6 +230,8 @@ export interface DashboardStats {
   cashInHand: number;
   bankCUB: number;
   bankKVB: number;
+  /** Dynamic bank balances (key = bank name); includes all active banks */
+  bankBalances: Record<string, number>;
   receivableOutstanding: number;
   payableOutstanding: number;
   royaltyIncomeMonth: number;

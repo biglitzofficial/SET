@@ -40,7 +40,7 @@ const Login: React.FC<LoginProps> = ({ onLogin, staffUsers }) => {
         <div className="bg-white/70 backdrop-blur-xl rounded-[2.5rem] shadow-soft border border-white/50 p-10 animate-scaleUp">
           
           <div className="flex flex-col items-center mb-10">
-             <img src="/logo.png" alt="Sri Chendur Traders" className="h-24 w-24 object-contain mb-4 drop-shadow-lg" />
+             <img src="/favicon.jpg" alt="Sri Chendur Traders" className="h-24 w-24 object-contain mb-4 drop-shadow-lg rounded-xl" />
              <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Sri Chendur Traders</h1>
              <p className="text-xs font-medium text-slate-400 mt-2 uppercase tracking-widest">Finance Operating System</p>
           </div>

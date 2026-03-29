@@ -17,7 +17,7 @@ router.get('/', authenticate, async (req, res) => {
         savingCategories: ['LIC', 'SIP', 'CHIT_SAVINGS', 'GOLD_SAVINGS', 'FIXED_DEPOSIT'],
         otherBusinesses: ['FITO6', 'FITOBOWL', 'TRANSPORT_DIV'],
         incomeCategories: ['Salary', 'Commission', 'Incentives'],
-        openingBalances: { CASH: 0, CUB: 0, KVB: 0, CAPITAL: 0 }
+        openingBalances: { CASH: 0, CUB: 0, KVB: 0, CAPITAL: 0, RETAINED_EARNINGS: 0 }
       });
     }
 

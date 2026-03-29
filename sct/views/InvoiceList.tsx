@@ -1,7 +1,8 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
-import { Invoice, Customer, InvoiceType, ChitGroup, Liability, AuditLog, UserRole, ChitAuction, StaffUser } from '../types';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { Invoice, Customer, InvoiceType, ChitGroup, Liability, Payment, AuditLog, UserRole, ChitAuction, StaffUser } from '../types';
 import { invoiceAPI, chitAPI, dueDatesAPI } from '../services/api';
+import { canStaffDeleteRecord } from '../utils/authHelpers';
 
 interface InvoiceListProps {
   invoices: Invoice[];
@@ -10,6 +11,7 @@ interface InvoiceListProps {
   chitGroups: ChitGroup[];
   setChitGroups: React.Dispatch<React.SetStateAction<ChitGroup[]>>;
   liabilities: Liability[];
+  payments: Payment[];
   role: UserRole;
   setAuditLogs: React.Dispatch<React.SetStateAction<AuditLog[]>>;
   currentUser?: StaffUser | null;
@@ -17,7 +19,83 @@ interface InvoiceListProps {
 
 type BatchType = 'ROYALTY' | 'INTEREST' | 'CHIT' | 'INTEREST_OUT';
 
-const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, customers, chitGroups, setChitGroups, liabilities, role, setAuditLogs, currentUser }) => {
+// Compute per-invoice balance from payments: explicit invoiceId links + FIFO allocation for unlinked payments
+function computeInvoiceBalances(invoices: Invoice[], payments: Payment[]): Map<string, number> {
+  const result = new Map<string, number>();
+  const paidByInvoiceId = new Map<string, number>();
+  for (const p of payments) {
+    if (p.invoiceId && p.type === 'IN') {
+      paidByInvoiceId.set(p.invoiceId, (paidByInvoiceId.get(p.invoiceId) || 0) + p.amount);
+    }
+  }
+
+  const getPartyId = (inv: Invoice): string | null => {
+    if (inv.lenderId) return inv.lenderId;
+    return inv.customerId || null;
+  };
+
+  const matchesPayment = (inv: Invoice, p: Payment): boolean => {
+    if (p.invoiceId) return false;
+    const partyId = getPartyId(inv);
+    if (!partyId || p.sourceId !== partyId) return false;
+    if (inv.type === 'ROYALTY') return p.category === 'ROYALTY' && p.type === 'IN';
+    if (inv.type === 'INTEREST') return p.category === 'INTEREST' && p.type === 'IN';
+    if (inv.type === 'CHIT') return (p.category === 'CHIT' || p.category === 'CHIT_FUND') && (inv.direction === 'IN' ? p.type === 'IN' : p.type === 'OUT');
+    if (inv.type === 'INTEREST_OUT') return p.category === 'LOAN_INTEREST' && p.type === 'OUT';
+    if (inv.type === 'GENERAL') return (p.category === 'GENERAL' || p.category === 'CUSTOMER_PAYMENT') && (inv.direction === 'IN' ? p.type === 'IN' : p.type === 'OUT');
+    return false;
+  };
+
+  const validInvoices = invoices.filter(i => !i.isVoid);
+  const groupKey = (inv: Invoice) => `${getPartyId(inv) ?? ''}_${inv.type}`;
+
+  const groups = new Map<string, Invoice[]>();
+  for (const inv of validInvoices) {
+    const key = groupKey(inv);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(inv);
+  }
+
+  for (const [, invs] of groups) {
+    const sorted = [...invs].sort((a, b) => a.date - b.date);
+    const partyId = getPartyId(sorted[0]);
+    if (!partyId) continue;
+
+    const unlinkedPayments = payments
+      .filter(p => matchesPayment(sorted[0], p))
+      .sort((a, b) => a.date - b.date);
+
+    let payIdx = 0;
+    let payRemaining = unlinkedPayments[0]?.amount ?? 0;
+
+    for (const inv of sorted) {
+      let deducted = paidByInvoiceId.get(inv.id) || 0;
+
+      while (payIdx < unlinkedPayments.length && deducted < inv.amount) {
+        const take = Math.min(payRemaining, inv.amount - deducted);
+        deducted += take;
+        payRemaining -= take;
+        if (payRemaining <= 0) {
+          payIdx++;
+          payRemaining = unlinkedPayments[payIdx]?.amount ?? 0;
+        }
+      }
+
+      result.set(inv.id, Math.max(0, inv.amount - deducted));
+    }
+  }
+
+  for (const inv of validInvoices) {
+    if (!result.has(inv.id)) {
+      const explicitPaid = paidByInvoiceId.get(inv.id) || 0;
+      result.set(inv.id, Math.max(0, inv.amount - explicitPaid));
+    }
+  }
+
+  return result;
+}
+
+const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, customers, chitGroups, setChitGroups, liabilities, payments = [], role, setAuditLogs, currentUser }) => {
   
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [deletingInvoiceId, setDeletingInvoiceId] = useState<string | null>(null);
@@ -91,37 +169,167 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
   const [search, setSearch] = useState('');
 
   // DATE FILTER STATE
-  const [dateFilter, setDateFilter] = useState<'ALL' | 'THIS_MONTH' | 'LAST_MONTH' | 'CUSTOM'>('ALL');
+  const [dateFilter, setDateFilter] = useState<'ALL' | 'TODAY' | 'YESTERDAY' | 'LAST_7' | 'THIS_MONTH' | 'LAST_MONTH' | 'CUSTOM'>('THIS_MONTH');
   const [customStartDate, setCustomStartDate] = useState('');
   const [customEndDate, setCustomEndDate] = useState('');
-  const ITEMS_PER_PAGE = 30;
+  const [showDateDropdown, setShowDateDropdown] = useState(false);
+  const dateDropdownRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (dateDropdownRef.current && !dateDropdownRef.current.contains(e.target as Node)) {
+        setShowDateDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Compute the active date range for label display
+  const activeDateRange = useMemo(() => {
+    const fmt = (ts: number) => new Date(ts).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }).replace(/\//g, '-');
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999).getTime();
+    if (dateFilter === 'ALL') return { label: 'All Time', start: 0, end: Number.MAX_SAFE_INTEGER };
+    if (dateFilter === 'TODAY') return { label: fmt(todayStart), start: todayStart, end: todayEnd };
+    if (dateFilter === 'YESTERDAY') {
+      const s = todayStart - 86400000; const e = todayStart - 1;
+      return { label: `${fmt(s)} to ${fmt(e)}`, start: s, end: e };
+    }
+    if (dateFilter === 'LAST_7') {
+      const s = todayStart - 6 * 86400000;
+      return { label: `${fmt(s)} to ${fmt(todayEnd)}`, start: s, end: todayEnd };
+    }
+    if (dateFilter === 'THIS_MONTH') {
+      const s = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+      const e = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999).getTime();
+      return { label: `${fmt(s)} to ${fmt(e)}`, start: s, end: e };
+    }
+    if (dateFilter === 'LAST_MONTH') {
+      const s = new Date(now.getFullYear(), now.getMonth() - 1, 1).getTime();
+      const e = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999).getTime();
+      return { label: `${fmt(s)} to ${fmt(e)}`, start: s, end: e };
+    }
+    if (dateFilter === 'CUSTOM') {
+      const s = customStartDate ? new Date(customStartDate).getTime() : 0;
+      const e = customEndDate ? new Date(customEndDate).setHours(23, 59, 59, 999) : Number.MAX_SAFE_INTEGER;
+      const lbl = customStartDate && customEndDate ? `${customStartDate} to ${customEndDate}` : customStartDate ? `From ${customStartDate}` : 'Custom Range';
+      return { label: lbl, start: s, end: e };
+    }
+    return { label: 'All Time', start: 0, end: Number.MAX_SAFE_INTEGER };
+  }, [dateFilter, customStartDate, customEndDate]);
+  const ITEMS_PER_PAGE = 15;
+
+  // --- MANUAL INVOICE STATE ---
+  const [showManualModal, setShowManualModal] = useState(false);
+  const [manualForm, setManualForm] = useState({
+    customerSearch: '',
+    customerId: '',
+    customerName: '',
+    type: 'ROYALTY' as InvoiceType,
+    direction: 'IN' as 'IN' | 'OUT',
+    amount: 0,
+    date: new Date().toISOString().substr(0, 10),
+    notes: '',
+  });
+  const [manualCustomerResults, setManualCustomerResults] = useState<Customer[]>([]);
+  const [showManualDropdown, setShowManualDropdown] = useState(false);
+  const [isPostingManual, setIsPostingManual] = useState(false);
+
+  const openManualModal = () => {
+    setManualForm({
+      customerSearch: '',
+      customerId: '',
+      customerName: '',
+      type: 'ROYALTY',
+      direction: 'IN',
+      amount: 0,
+      date: new Date().toISOString().substr(0, 10),
+      notes: '',
+    });
+    setManualCustomerResults([]);
+    setShowManualModal(true);
+  };
+
+  const getManualCustomerPool = (type: string): Customer[] => {
+    const active = customers.filter(c => c.status === 'ACTIVE');
+    if (type === 'ROYALTY')      return active.filter(c => c.isRoyalty);
+    if (type === 'INTEREST')     return active.filter(c => c.isInterest);
+    if (type === 'CHIT')         return active.filter(c => c.isChit);
+    if (type === 'GENERAL')      return active.filter(c => c.isGeneral);
+    if (type === 'INTEREST_OUT') return active;
+    return active;
+  };
+
+  const handleManualCustomerSearch = (q: string) => {
+    setManualForm(f => ({ ...f, customerSearch: q, customerId: '', customerName: '' }));
+    const pool = getManualCustomerPool(manualForm.type);
+    if (q.trim().length > 0) {
+      setManualCustomerResults(
+        pool.filter(c => c.name.toLowerCase().includes(q.toLowerCase())).slice(0, 8)
+      );
+      setShowManualDropdown(true);
+    } else {
+      // Show all pool members when input is empty (auto-list on focus/type change)
+      setManualCustomerResults(pool.slice(0, 10));
+      setShowManualDropdown(pool.length > 0);
+    }
+  };
+
+  const selectManualCustomer = (c: Customer) => {
+    setManualForm(f => ({ ...f, customerSearch: c.name, customerId: c.id, customerName: c.name }));
+    setShowManualDropdown(false);
+  };
+
+  const handlePostManualInvoice = async () => {
+    if (!manualForm.customerId || !manualForm.amount || manualForm.amount <= 0) {
+      alert('Please select a customer and enter a valid amount.');
+      return;
+    }
+    setIsPostingManual(true);
+    try {
+      const date = new Date(manualForm.date).getTime();
+      const inv: Omit<Invoice, 'id'> = {
+        invoiceNumber: getNextInvoiceNumber(manualForm.type, date),
+        customerId: manualForm.customerId,
+        customerName: manualForm.customerName,
+        type: manualForm.type,
+        direction: manualForm.direction,
+        amount: manualForm.amount,
+        date,
+        status: 'UNPAID',
+        balance: manualForm.amount,
+        notes: manualForm.notes || undefined,
+      };
+      const result = await invoiceAPI.create(inv);
+      const saved: Invoice = { ...inv, id: result.id };
+      setInvoices(prev => [saved, ...prev]);
+      setShowManualModal(false);
+    } catch (err: any) {
+      alert(`Failed to post invoice: ${err?.message || 'Please try again.'}`);
+    } finally {
+      setIsPostingManual(false);
+    }
+  };
   const [currentPage, setCurrentPage] = useState(1);
 
   // --- FILTER LOGIC ---
   const filteredInvoices = useMemo(() => {
-    const now = new Date();
-    const startOfThisMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
-    const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1).getTime();
-    const endOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59).getTime();
-    const customStart = customStartDate ? new Date(customStartDate).getTime() : 0;
-    const customEnd = customEndDate ? new Date(customEndDate).setHours(23,59,59,999) : Number.MAX_SAFE_INTEGER;
-
     return invoices.filter(inv => {
       if (inv.isVoid) return false;
       const matchesTab = activeTab === 'ALL' || inv.type === activeTab;
       const matchesSearch = inv.customerName.toLowerCase().includes(search.toLowerCase()) || 
                             inv.invoiceNumber.toLowerCase().includes(search.toLowerCase());
-      let matchesDate = true;
-      if (dateFilter === 'THIS_MONTH') matchesDate = inv.date >= startOfThisMonth;
-      else if (dateFilter === 'LAST_MONTH') matchesDate = inv.date >= startOfLastMonth && inv.date <= endOfLastMonth;
-      else if (dateFilter === 'CUSTOM') matchesDate = inv.date >= customStart && inv.date <= customEnd;
-
+      const matchesDate = inv.date >= activeDateRange.start && inv.date <= activeDateRange.end;
       return matchesTab && matchesSearch && matchesDate;
-    }).sort((a, b) => b.date - a.date);
-  }, [invoices, activeTab, search, dateFilter, customStartDate, customEndDate]);
+    }).sort((a, b) => a.date - b.date);
+  }, [invoices, activeTab, search, activeDateRange]);
+
+  // Compute balance from payments (FIFO allocation for unlinked payments + explicit invoiceId links)
+  const invoiceBalanceMap = useMemo(() => computeInvoiceBalances(invoices, payments), [invoices, payments]);
 
   const totalFilteredAmount = useMemo(() => filteredInvoices.reduce((acc, i) => acc + i.amount, 0), [filteredInvoices]);
-  const totalUnpaid = useMemo(() => filteredInvoices.reduce((acc, i) => acc + i.balance, 0), [filteredInvoices]);
+  const totalUnpaid = useMemo(() => filteredInvoices.reduce((acc, i) => acc + (invoiceBalanceMap.get(i.id) ?? i.balance), 0), [filteredInvoices, invoiceBalanceMap]);
 
   // Reset to page 1 whenever filters/search/tab change
   useEffect(() => { setCurrentPage(1); }, [filteredInvoices]);
@@ -375,7 +583,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
             date: date,
             status: 'UNPAID',
             balance: seatAmount,
-            notes: `Month ${seqMonth} | Seat #${seatIndex + 1} | Winner: ${customers.find(c=>c.id === chitWinnerId)?.name} | Div: ₹${Math.round(chitCalc.dividendPerMember)}`
+            notes: `Month ${seqMonth} | Seat #${seatIndex + 1} | Winner: ${customers.find(c=>c.id === chitWinnerId)?.name} | Div: ${Math.round(chitCalc.dividendPerMember)}`
           });
         }
       });
@@ -393,7 +601,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
         date: date,
         status: 'UNPAID',
         balance: chitCalc.winnerPayable,
-        notes: `Prize Money Payable for Month ${seqMonth} (Bid: ₹${chitBidAmount.toLocaleString()})`
+        notes: `Prize Money Payable for Month ${seqMonth} (Bid: ${chitBidAmount.toLocaleString()})`
       });
     }
 
@@ -512,7 +720,8 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
       'ROYALTY': 'bg-action-purple text-white',
       'INTEREST': 'bg-action-green text-white',
       'CHIT': 'bg-action-orange text-white',
-      'INTEREST_OUT': 'bg-action-red text-white'
+      'INTEREST_OUT': 'bg-action-red text-white',
+      'GENERAL': 'bg-slate-600 text-white',
     };
     
     if (direction === 'OUT' && type === 'CHIT') {
@@ -580,22 +789,25 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
         </div>
       )}
       {/* HEADER SECTION */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-6">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
          <div>
             <h1 className="text-4xl font-display font-black text-slate-900 uppercase italic tracking-tighter">Voucher Management</h1>
             <p className="text-sm font-bold text-slate-400 uppercase tracking-[0.2em] mt-1">Double-Entry Billing Hub</p>
          </div>
          
          {/* ACTION BUTTONS */}
-         <div className="flex flex-wrap gap-3">
+         <div className="flex flex-nowrap gap-3 items-center">
+            <button onClick={openManualModal} className="bg-slate-800 hover:bg-slate-700 text-white px-6 py-3 rounded-full font-black text-xs uppercase tracking-widest shadow-lg transform hover:scale-105 transition-all flex items-center gap-2">
+               <i className="fas fa-pen-to-square text-sm"></i> Invoice
+            </button>
             <button onClick={() => setActiveBatchType('ROYALTY')} className="bg-action-purple hover:bg-action-purpleHover text-white px-6 py-3 rounded-full font-black text-xs uppercase tracking-widest shadow-lg transform hover:scale-105 transition-all flex items-center gap-2">
-               <i className="fas fa-crown text-sm"></i> Raise Royalty
+               <i className="fas fa-crown text-sm"></i> Royalty
             </button>
             <button onClick={() => setActiveBatchType('INTEREST')} className="bg-action-green hover:bg-action-greenHover text-white px-6 py-3 rounded-full font-black text-xs uppercase tracking-widest shadow-lg transform hover:scale-105 transition-all flex items-center gap-2">
-               <i className="fas fa-hand-holding-dollar text-sm"></i> Raise Interest In
+               <i className="fas fa-hand-holding-dollar text-sm"></i> Interest In
             </button>
             <button onClick={() => setActiveBatchType('INTEREST_OUT')} className="bg-action-red hover:bg-action-redHover text-white px-6 py-3 rounded-full font-black text-xs uppercase tracking-widest shadow-lg transform hover:scale-105 transition-all flex items-center gap-2">
-               <i className="fas fa-arrow-trend-down text-sm"></i> Raise Interest Out
+               <i className="fas fa-arrow-trend-down text-sm"></i> Interest Out
             </button>
             <button onClick={async () => {
                // Refresh chit groups before opening modal
@@ -632,7 +844,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
                }
                setActiveBatchType('CHIT');
             }} className="bg-action-orange hover:bg-action-orangeHover text-white px-6 py-3 rounded-full font-black text-xs uppercase tracking-widest shadow-lg transform hover:scale-105 transition-all flex items-center gap-2">
-               <i className="fas fa-users-viewfinder text-sm"></i> Raise Chit
+               <i className="fas fa-users-viewfinder text-sm"></i> Chit
             </button>
          </div>
       </div>
@@ -645,11 +857,11 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
          </div>
          <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-slate-100 flex flex-col justify-center h-40">
             <span className="text-[11px] font-black text-slate-400 uppercase tracking-widest mb-2">Total Gross (Filtered)</span>
-            <div className="text-5xl font-display font-black text-action-purple tracking-tighter">₹{totalFilteredAmount.toLocaleString()}</div>
+            <div className="text-5xl font-display font-black text-action-purple tracking-tighter">{totalFilteredAmount.toLocaleString()}</div>
          </div>
          <div className="bg-rose-50 p-8 rounded-[2rem] shadow-inner border border-rose-100 flex flex-col justify-center h-40">
             <span className="text-[11px] font-black text-rose-400 uppercase tracking-widest mb-2">Current Unpaid Dues</span>
-            <div className="text-5xl font-display font-black text-rose-600 tracking-tighter">₹{totalUnpaid.toLocaleString()}</div>
+            <div className="text-5xl font-display font-black text-rose-600 tracking-tighter">{totalUnpaid.toLocaleString()}</div>
          </div>
       </div>
 
@@ -668,26 +880,57 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
                 />
             </div>
 
-            {/* DATE FILTER CONTROLS */}
-            <div className="flex flex-col md:flex-row gap-2 w-full lg:w-auto items-center">
-                <div className="bg-slate-100 p-1 rounded-xl flex gap-1 w-full md:w-auto overflow-x-auto">
-                    {['ALL', 'THIS_MONTH', 'LAST_MONTH', 'CUSTOM'].map(df => (
-                        <button 
-                            key={df}
-                            onClick={() => setDateFilter(df as any)}
-                            className={`px-4 py-3 rounded-lg text-[9px] font-black uppercase tracking-widest whitespace-nowrap transition-all ${dateFilter === df ? 'bg-white shadow text-slate-900' : 'text-slate-400 hover:text-slate-600'}`}
-                        >
-                            {df.replace('_', ' ')}
-                        </button>
+            {/* DATE FILTER DROPDOWN */}
+            <div ref={dateDropdownRef} className="relative w-full lg:w-auto">
+              <button
+                onClick={() => setShowDateDropdown(v => !v)}
+                className="flex items-center gap-2 px-4 py-3 bg-white border-2 border-slate-200 rounded-xl text-xs font-bold text-slate-700 hover:border-indigo-400 transition-all whitespace-nowrap w-full lg:w-auto"
+              >
+                <i className="fas fa-calendar-alt text-indigo-500"></i>
+                <span className="flex-1 text-left">{activeDateRange.label}</span>
+                <i className={`fas fa-chevron-down text-slate-400 text-[10px] transition-transform ${showDateDropdown ? 'rotate-180' : ''}`}></i>
+              </button>
+              {showDateDropdown && (
+                <div className="absolute top-full right-0 mt-2 bg-white rounded-2xl shadow-xl border border-slate-100 z-30 overflow-hidden animate-fadeIn flex">
+                  {/* Options list */}
+                  <div className="min-w-[180px]">
+                    {([
+                      { key: 'TODAY',      label: 'Today' },
+                      { key: 'YESTERDAY',  label: 'Yesterday' },
+                      { key: 'LAST_7',     label: 'Last 7 Days' },
+                      { key: 'THIS_MONTH', label: 'This Month' },
+                      { key: 'LAST_MONTH', label: 'Last Month' },
+                      { key: 'ALL',        label: 'All Time' },
+                      { key: 'CUSTOM',     label: 'Custom Range' },
+                    ] as const).map(opt => (
+                      <button
+                        key={opt.key}
+                        onClick={() => { setDateFilter(opt.key); if (opt.key !== 'CUSTOM') setShowDateDropdown(false); }}
+                        className={`w-full text-left px-5 py-3 text-xs font-bold transition-colors flex items-center justify-between gap-3 ${dateFilter === opt.key ? 'bg-indigo-600 text-white' : 'text-slate-700 hover:bg-slate-50'}`}
+                      >
+                        {opt.label}
+                        {opt.key === 'CUSTOM' && <i className={`fas fa-chevron-right text-[9px] ${dateFilter === 'CUSTOM' ? 'text-white' : 'text-slate-300'}`}></i>}
+                      </button>
                     ))}
-                </div>
-                {dateFilter === 'CUSTOM' && (
-                    <div className="flex gap-2 items-center bg-slate-50 p-1 rounded-xl border border-slate-100 animate-fadeIn">
-                        <input type="date" className="bg-white border-none rounded-lg px-2 py-2 text-xs font-bold outline-none" value={customStartDate} onChange={e => setCustomStartDate(e.target.value)} />
-                        <span className="text-slate-300">-</span>
-                        <input type="date" className="bg-white border-none rounded-lg px-2 py-2 text-xs font-bold outline-none" value={customEndDate} onChange={e => setCustomEndDate(e.target.value)} />
+                  </div>
+                  {/* Custom range panel — appears to the right */}
+                  {dateFilter === 'CUSTOM' && (
+                    <div className="px-4 py-4 space-y-3 border-l border-slate-100 bg-slate-50 min-w-[190px] flex flex-col justify-center">
+                      <div>
+                        <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">From</label>
+                        <input type="date" className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs font-bold outline-none focus:border-indigo-500" value={customStartDate} onChange={e => setCustomStartDate(e.target.value)} />
+                      </div>
+                      <div>
+                        <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">To</label>
+                        <input type="date" className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs font-bold outline-none focus:border-indigo-500" value={customEndDate} onChange={e => setCustomEndDate(e.target.value)} />
+                      </div>
+                      <button onClick={() => setShowDateDropdown(false)} className="w-full bg-indigo-600 text-white py-2 rounded-lg text-xs font-black uppercase tracking-widest hover:bg-indigo-700 transition">
+                        Apply
+                      </button>
                     </div>
-                )}
+                  )}
+                </div>
+              )}
             </div>
 
             {/* TYPE TABS */}
@@ -730,9 +973,9 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
          )}
          <div className="overflow-x-auto">
          <table className="min-w-full">
-            <thead className="bg-dark-900 text-white">
+            <thead className="bg-slate-900 text-white">
                <tr>
-                  <th className="px-4 py-6 text-center w-12">
+                  <th className="px-4 py-4 text-center w-12">
                     <input
                       type="checkbox"
                       className="rounded cursor-pointer accent-indigo-500"
@@ -740,12 +983,12 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
                       onChange={() => toggleSelectAll(paginatedInvoices.map(i => i.id))}
                     />
                   </th>
-                  <th className="px-8 py-6 text-left text-[10px] font-black uppercase tracking-widest opacity-80">Date</th>
-                  <th className="px-8 py-6 text-left text-[10px] font-black uppercase tracking-widest opacity-80">Voucher</th>
-                  <th className="px-8 py-6 text-left text-[10px] font-black uppercase tracking-widest opacity-80">Stakeholder</th>
-                  <th className="px-8 py-6 text-right text-[10px] font-black uppercase tracking-widest opacity-80">Gross Amount</th>
-                  <th className="px-8 py-6 text-right text-[10px] font-black uppercase tracking-widest opacity-80">Balance Due</th>
-                  <th className="px-8 py-6 text-right text-[10px] font-black uppercase tracking-widest opacity-80">Action</th>
+                  <th className="px-8 py-4 text-left text-[10px] font-black uppercase tracking-widest text-slate-300">Date</th>
+                  <th className="px-8 py-4 text-left text-[10px] font-black uppercase tracking-widest text-slate-300">Type / Voucher</th>
+                  <th className="px-8 py-4 text-left text-[10px] font-black uppercase tracking-widest text-slate-300">Stakeholder</th>
+                  <th className="px-8 py-4 text-right text-[10px] font-black uppercase tracking-widest text-slate-300">Gross Amount</th>
+                  <th className="px-8 py-4 text-right text-[10px] font-black uppercase tracking-widest text-slate-300">Balance Due</th>
+                  <th className="px-8 py-4 text-right text-[10px] font-black uppercase tracking-widest text-slate-300">Action</th>
                </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -772,16 +1015,16 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
                      </td>
                      <td className="px-8 py-6 whitespace-nowrap text-right">
                         <div className={`font-black text-lg font-display italic ${inv.direction === 'OUT' ? 'text-rose-600' : 'text-slate-900'}`}>
-                           ₹{inv.amount.toLocaleString()}
+                           {inv.amount.toLocaleString()}
                         </div>
                      </td>
                      <td className="px-8 py-6 whitespace-nowrap text-right">
-                        <div className={`font-black text-lg font-display italic ${inv.balance > 0 ? (inv.direction === 'OUT' ? 'text-rose-500' : 'text-indigo-600') : 'text-emerald-500 opacity-50'}`}>
-                           ₹{inv.balance.toLocaleString()}
+                        <div className={`font-black text-lg font-display italic ${(invoiceBalanceMap.get(inv.id) ?? inv.balance) > 0 ? (inv.direction === 'OUT' ? 'text-rose-500' : 'text-indigo-600') : 'text-emerald-500 opacity-50'}`}>
+                           {(invoiceBalanceMap.get(inv.id) ?? inv.balance).toLocaleString()}
                         </div>
                      </td>
                      <td className="px-8 py-6 whitespace-nowrap text-right">
-                        {currentUser?.permissions.canDelete && (
+                        {canStaffDeleteRecord(currentUser, inv) && (
                            <button onClick={() => handleDeleteInvoice(inv.id)} disabled={deletingInvoiceId === inv.id} className="h-10 w-10 bg-slate-100 rounded-full flex items-center justify-center text-slate-400 hover:bg-rose-100 hover:text-rose-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                               {deletingInvoiceId === inv.id
                                 ? <i className="fas fa-spinner fa-spin text-xs"></i>
@@ -802,6 +1045,24 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
                   </tr>
                )}
             </tbody>
+            {filteredInvoices.length > 0 && (
+              <tfoot>
+                <tr className="bg-slate-50 border-t-2 border-slate-200">
+                  <td colSpan={4} className="px-8 py-4 text-right text-[10px] font-black text-slate-500 uppercase tracking-widest">
+                    Filtered Total ({filteredInvoices.length} records)
+                  </td>
+                  <td className="px-8 py-4 text-right">
+                    <div className="text-base font-black text-slate-900 font-display">{totalFilteredAmount.toLocaleString()}</div>
+                    <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wide">Gross</div>
+                  </td>
+                  <td className="px-8 py-4 text-right">
+                    <div className="text-base font-black text-rose-600 font-display">{totalUnpaid.toLocaleString()}</div>
+                    <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wide">Unpaid</div>
+                  </td>
+                  <td></td>
+                </tr>
+              </tfoot>
+            )}
          </table>
          </div>
          {/* PAGINATION */}
@@ -841,6 +1102,145 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
            </div>
          )}
       </div>
+
+      {/* MANUAL INVOICE MODAL */}
+      {showManualModal && (
+        <div className="fixed inset-0 bg-slate-900 bg-opacity-90 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-lg overflow-hidden animate-scaleUp">
+            <div className="px-8 py-6 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
+              <div>
+                <h3 className="text-xl font-black text-slate-800 uppercase italic tracking-tighter">Manual Invoice</h3>
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">Create a single custom invoice</p>
+              </div>
+              <button onClick={() => setShowManualModal(false)} className="h-10 w-10 bg-white rounded-full shadow-sm flex items-center justify-center text-slate-400 hover:text-rose-500 transition">
+                <i className="fas fa-times"></i>
+              </button>
+            </div>
+            <div className="p-8 space-y-5">
+              {/* Customer Search */}
+              <div className="relative">
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Party / Customer</label>
+                <div className="relative">
+                  <i className="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-300"></i>
+                  <input
+                    type="text"
+                    className="w-full pl-10 pr-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl text-sm font-bold outline-none focus:border-indigo-500 uppercase"
+                    placeholder="Search customer..."
+                    value={manualForm.customerSearch}
+                    onChange={e => handleManualCustomerSearch(e.target.value)}
+                    onFocus={() => {
+                      const pool = getManualCustomerPool(manualForm.type);
+                      if (!manualForm.customerSearch) {
+                        setManualCustomerResults(pool.slice(0, 10));
+                        setShowManualDropdown(pool.length > 0);
+                      } else {
+                        setShowManualDropdown(true);
+                      }
+                    }}
+                  />
+                </div>
+                {showManualDropdown && manualCustomerResults.length > 0 && (
+                  <div className="absolute top-full left-0 right-0 mt-1 bg-white rounded-xl shadow-xl border border-slate-100 max-h-48 overflow-y-auto z-30">
+                    {manualCustomerResults.map(c => (
+                      <div key={c.id} onClick={() => selectManualCustomer(c)}
+                        className="px-4 py-3 hover:bg-indigo-50 cursor-pointer border-b border-slate-50 last:border-0 text-sm font-bold text-slate-700 uppercase transition-colors">
+                        {c.name}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {manualForm.customerId && (
+                  <div className="mt-1.5 flex items-center gap-2">
+                    <div className="h-2 w-2 rounded-full bg-emerald-500"></div>
+                    <span className="text-[10px] font-black text-emerald-600 uppercase">{manualForm.customerName} selected</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Type + Direction */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Invoice Type</label>
+                  <select
+                    className="w-full border-2 border-slate-100 rounded-xl px-4 py-3 text-sm font-bold bg-white outline-none focus:border-indigo-500"
+                    value={manualForm.type}
+                    onChange={e => {
+                      const newType = e.target.value as InvoiceType;
+                      setManualForm(f => ({ ...f, type: newType, customerId: '', customerName: '', customerSearch: '' }));
+                      const pool = getManualCustomerPool(newType);
+                      setManualCustomerResults(pool.slice(0, 10));
+                      setShowManualDropdown(pool.length > 0);
+                    }}
+                  >
+                    <option value="ROYALTY">Royalty</option>
+                    <option value="INTEREST">Interest (In)</option>
+                    <option value="INTEREST_OUT">Interest (Out)</option>
+                    <option value="CHIT">Chit</option>
+                    <option value="GENERAL">General</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Direction</label>
+                  <div className="flex gap-2">
+                    {(['IN', 'OUT'] as const).map(d => (
+                      <button key={d} type="button"
+                        onClick={() => setManualForm(f => ({ ...f, direction: d }))}
+                        className={`flex-1 py-3 rounded-xl text-xs font-black uppercase transition ${manualForm.direction === d ? (d === 'IN' ? 'bg-emerald-600 text-white' : 'bg-rose-600 text-white') : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
+                        {d === 'IN' ? 'IN (Receivable)' : 'OUT (Payable)'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Amount + Date */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Amount</label>
+                  <input
+                    type="number"
+                    className="w-full border-2 border-slate-100 rounded-xl px-4 py-3 text-xl font-black outline-none focus:border-indigo-500 bg-white [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                    placeholder="0"
+                    value={manualForm.amount || ''}
+                    onChange={e => setManualForm(f => ({ ...f, amount: Number(e.target.value) || 0 }))}
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Invoice Date</label>
+                  <input
+                    type="date"
+                    className="w-full border-2 border-slate-100 rounded-xl px-4 py-3 text-sm font-bold outline-none focus:border-indigo-500 bg-white"
+                    value={manualForm.date}
+                    onChange={e => setManualForm(f => ({ ...f, date: e.target.value }))}
+                  />
+                </div>
+              </div>
+
+              {/* Notes */}
+              <div>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Notes (Optional)</label>
+                <input
+                  type="text"
+                  className="w-full border-2 border-slate-100 rounded-xl px-4 py-3 text-sm font-bold outline-none focus:border-indigo-500 bg-white"
+                  placeholder="Remarks..."
+                  value={manualForm.notes}
+                  onChange={e => setManualForm(f => ({ ...f, notes: e.target.value }))}
+                />
+              </div>
+
+              <button
+                onClick={handlePostManualInvoice}
+                disabled={isPostingManual || !manualForm.customerId || !manualForm.amount}
+                className="w-full bg-slate-900 text-white py-4 rounded-2xl font-black uppercase tracking-widest hover:bg-slate-800 transition shadow-xl disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {isPostingManual
+                  ? <><i className="fas fa-spinner fa-spin"></i> Posting...</>
+                  : <><i className="fas fa-check-circle"></i> Post Invoice</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* BULK GENERATION MODAL */}
       {activeBatchType && (
@@ -918,7 +1318,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
                                 </select>
                               </div>
                               <div>
-                                <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-2">Bid / Discount (₹)</label>
+                                <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-2">Bid / Discount ()</label>
                                 <input type="number" className="w-full border-2 border-slate-100 rounded-xl px-4 py-3 text-sm font-bold bg-white outline-none focus:border-indigo-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={chitBidAmount || ''} onChange={e => setChitBidAmount(Number(e.target.value))} />
                               </div>
                            </div>
@@ -930,27 +1330,27 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
                                 <div className="space-y-2 text-xs">
                                    <div className="flex justify-between">
                                       <span className="font-bold text-slate-400">Total Chit Value</span>
-                                      <span className="font-bold text-slate-700">₹{chitCalc.totalValue.toLocaleString()}</span>
+                                      <span className="font-bold text-slate-700">{chitCalc.totalValue.toLocaleString()}</span>
                                    </div>
                                    <div className="flex justify-between">
                                       <span className="font-bold text-slate-400">Commission (5%)</span>
-                                      <span className="font-bold text-emerald-600">+ ₹{chitCalc.commission.toLocaleString()}</span>
+                                      <span className="font-bold text-emerald-600">+ {chitCalc.commission.toLocaleString()}</span>
                                    </div>
                                    <div className="flex justify-between border-t border-slate-200 pt-2">
                                       <span className="font-bold text-slate-400">Winner Payable (Liability)</span>
-                                      <span className="font-black text-rose-600">₹{chitCalc.winnerPayable.toLocaleString()}</span>
+                                      <span className="font-black text-rose-600">{chitCalc.winnerPayable.toLocaleString()}</span>
                                    </div>
                                    <div className="flex justify-between mt-1">
                                       <span className="font-bold text-slate-400">Dividend Per Member</span>
-                                      <span className="font-bold text-emerald-600">₹{Math.round(chitCalc.dividendPerMember).toLocaleString()}</span>
+                                      <span className="font-bold text-emerald-600">{Math.round(chitCalc.dividendPerMember).toLocaleString()}</span>
                                    </div>
                                    <div className="flex justify-between bg-white p-3 rounded-lg border border-slate-100 mt-2 shadow-sm">
                                       <span className="font-black text-slate-900 uppercase">Net Payable by Members</span>
-                                      <span className="font-black text-indigo-600 text-lg">₹{Math.round(chitCalc.netPayable).toLocaleString()}</span>
+                                      <span className="font-black text-indigo-600 text-lg">{Math.round(chitCalc.netPayable).toLocaleString()}</span>
                                    </div>
                                    <div className="text-[9px] text-center text-slate-400 mt-2">
-                                      Company Commission of <strong className="text-slate-600">₹{chitCalc.commission.toLocaleString()}</strong> will be automatically booked as Revenue. <br/>
-                                      A Liability of <strong className="text-rose-500">₹{chitCalc.winnerPayable.toLocaleString()}</strong> will be recorded for the winner.
+                                      Company Commission of <strong className="text-slate-600">{chitCalc.commission.toLocaleString()}</strong> will be automatically booked as Revenue. <br/>
+                                      A Liability of <strong className="text-rose-500">{chitCalc.winnerPayable.toLocaleString()}</strong> will be recorded for the winner.
                                    </div>
                                 </div>
                              </div>
@@ -971,7 +1371,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
                    <div>
                       <div className="flex justify-between items-center mb-4">
                          <span className="text-xs font-black text-slate-400 uppercase tracking-widest">{reviewBatch.length} Invoices Ready</span>
-                         <span className="text-lg font-black text-slate-900">Total: ₹{reviewBatch.reduce((a,b)=>a+b.amount,0).toLocaleString()}</span>
+                         <span className="text-lg font-black text-slate-900">Total: {reviewBatch.reduce((a,b)=>a+b.amount,0).toLocaleString()}</span>
                       </div>
                       <div className="max-h-80 overflow-y-auto border border-slate-100 rounded-2xl mb-6 custom-scrollbar">
                          <table className="min-w-full divide-y divide-slate-100">
@@ -988,7 +1388,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
                                      <td className="px-6 py-3 text-sm font-bold text-slate-700">{inv.customerName}</td>
                                      <td className="px-6 py-3 text-center"><InvoiceBadge type={inv.type} direction={inv.direction} /></td>
                                      <td className={`px-6 py-3 text-sm font-bold text-right ${inv.direction === 'OUT' ? 'text-rose-600' : 'text-slate-900'}`}>
-                                        {inv.direction === 'OUT' ? '-' : ''}₹{inv.amount.toLocaleString()}
+                                        {inv.direction === 'OUT' ? '-' : ''}{inv.amount.toLocaleString()}
                                      </td>
                                   </tr>
                                ))}
@@ -1010,3 +1410,4 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices, setInvoices, custom
 };
 
 export default InvoiceList;
+

@@ -3,14 +3,16 @@ import React, { useState, useMemo, Suspense, useEffect } from 'react';
 import { HashRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
 import { 
   Customer, Invoice, Payment, Liability, UserRole, 
-  DashboardStats, ChitGroup, Investment, AuditLog, StaffUser, BankAccount 
+  DashboardStats, ChitGroup, Investment, AuditLog, StaffUser, BankAccount, JournalEntry 
 } from './types';
 import { 
   SAMPLE_CUSTOMERS, SAMPLE_BANK_LOANS, 
   SAMPLE_INVOICES, SAMPLE_PAYMENTS, SAMPLE_CHIT_GROUPS,
   OPENING_BALANCES, SAMPLE_INVESTMENTS
 } from './constants';
-import { customerAPI, invoiceAPI, paymentAPI, reportsAPI, settingsAPI, chitAPI, liabilityAPI, investmentAPI } from './services/api';
+import { customerAPI, invoiceAPI, paymentAPI, reportsAPI, settingsAPI, chitAPI, liabilityAPI, investmentAPI, journalAPI } from './services/api';
+import { computeJournalEffects } from './utils/accountingConfig';
+import { sumPaymentsInForLedger } from './utils/ledgerUtils';
 
 // Views - Lazy Loaded
 import Login from './views/Login';
@@ -24,6 +26,8 @@ const Settings = React.lazy(() => import('./views/Settings'));
 const InvestmentList = React.lazy(() => import('./views/InvestmentList'));
 const ChitList = React.lazy(() => import('./views/ChitList'));
 const BusinessPerformance = React.lazy(() => import('./views/BusinessPerformance'));
+const Journal = React.lazy(() => import('./views/Journal'));
+const Contra = React.lazy(() => import('./views/Contra'));
 
 // --- COMPONENTS ---
 
@@ -52,7 +56,7 @@ const Sidebar = ({ role, onLogout, user }: { role: UserRole, onLogout: () => voi
   };
 
   return (
-    <aside className="w-72 h-[96%] my-auto ml-4 rounded-[2.5rem] bg-brand-950 flex flex-col shadow-2xl relative overflow-hidden hidden lg:flex">
+    <aside className="w-72 h-screen bg-brand-950 flex flex-col shadow-2xl relative overflow-hidden hidden lg:flex flex-shrink-0">
       {/* Background Decor */}
       <div className="absolute top-0 left-0 w-full h-full overflow-hidden pointer-events-none">
          <div className="absolute -top-24 -right-24 w-64 h-64 bg-brand-500 rounded-full blur-[100px] opacity-20"></div>
@@ -60,15 +64,20 @@ const Sidebar = ({ role, onLogout, user }: { role: UserRole, onLogout: () => voi
       </div>
 
       {/* Brand */}
-      <div className="h-24 flex flex-col justify-center px-5 relative z-10">
-        <div className="bg-white rounded-2xl px-4 py-2 inline-flex items-center shadow-lg w-fit">
-          <img src="/logo.png" alt="Sri Chendur Traders" className="h-8 w-40 object-contain object-left" />
+      <div className="relative z-10 shrink-0 px-6 pt-6 pb-4">
+        <div className="flex items-center gap-3">
+          <div className="flex-shrink-0 w-10 h-10 rounded-xl bg-amber-400/20 flex items-center justify-center border border-amber-400/40">
+            <i className="fas fa-chart-line text-amber-400 text-lg"></i>
+          </div>
+          <div className="border-l-4 border-amber-400 pl-4">
+            <span className="block text-3xl font-black tracking-tight text-white leading-none">SCT</span>
+            <span className="block text-[10px] text-slate-400 font-medium tracking-[0.15em] uppercase mt-2">Sri Chendur Traders</span>
+          </div>
         </div>
-        <div className="text-[9px] text-slate-500 font-bold tracking-[0.25em] uppercase mt-2 pl-1">Finance OS</div>
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 overflow-y-auto space-y-1 custom-scrollbar px-4 pb-4 relative z-10">
+      <nav className="flex-1 overflow-y-auto space-y-1 custom-scrollbar px-6 pb-4 relative z-10">
         <div className="px-4 mb-2 mt-2 text-[10px] font-bold uppercase tracking-widest text-slate-500">Overview</div>
         <NavItem to="/" icon="fa-chart-pie" label="Dashboard" exact={true} />
         
@@ -76,6 +85,8 @@ const Sidebar = ({ role, onLogout, user }: { role: UserRole, onLogout: () => voi
         <NavItem to="/accounts" icon="fa-file-invoice-dollar" label="Vouchers" />
         <NavItem to="/invoices" icon="fa-file-invoice" label="Billing" />
         <NavItem to="/customers" icon="fa-address-book" label="Registry" />
+        <NavItem to="/journal" icon="fa-book" label="Journal" />
+        <NavItem to="/contra" icon="fa-right-left" label="Contra" />
         
         <div className="px-4 mb-2 mt-6 text-[10px] font-black uppercase tracking-widest text-slate-500">Assets & Liab</div>
         <NavItem to="/savings" icon="fa-piggy-bank" label="Savings Hub" />
@@ -89,7 +100,7 @@ const Sidebar = ({ role, onLogout, user }: { role: UserRole, onLogout: () => voi
       </nav>
 
       {/* Profile/Logout */}
-      <div className="p-4 relative z-10">
+      <div className="px-6 py-4 relative z-10">
         <div className="bg-white/5 backdrop-blur-md rounded-2xl p-3 border border-white/5 flex items-center justify-between group hover:bg-white/10 transition-colors cursor-pointer">
            <div className="flex items-center gap-3">
               <div className="h-10 w-10 rounded-full bg-gradient-to-tr from-brand-400 to-accent-violet flex items-center justify-center text-white font-bold text-xs shadow-md">
@@ -140,8 +151,12 @@ const MobileMenu = ({ isOpen, onClose, role, onLogout, user }: any) => {
            {/* Header */}
            <div className="flex justify-between items-center mb-8">
               <div className="flex items-center gap-3">
-                <div className="bg-white rounded-xl px-2 py-1.5 shadow">
-                  <img src="/logo.png" alt="Sri Chendur Traders" className="h-7 object-contain" />
+                <div className="w-9 h-9 rounded-lg bg-amber-400/20 flex items-center justify-center border border-amber-400/40 flex-shrink-0">
+                  <i className="fas fa-chart-line text-amber-400 text-base"></i>
+                </div>
+                <div className="border-l-4 border-amber-400 pl-3">
+                  <span className="text-2xl font-black tracking-tight text-white block leading-none">SCT</span>
+                  <span className="text-[9px] text-slate-400 font-medium tracking-widest uppercase mt-1">Sri Chendur Traders</span>
                 </div>
               </div>
               <button onClick={onClose} className="text-slate-400 hover:text-white transition">
@@ -189,12 +204,11 @@ const MobileMenu = ({ isOpen, onClose, role, onLogout, user }: any) => {
   )
 }
 
-const Header = ({ onMenuToggle, openingBalances, bankAccounts, walletBalances }: { onMenuToggle: () => void; openingBalances: { CASH: number }; bankAccounts: { id: string; name: string; openingBalance: number; status: string }[]; walletBalances: { CASH: number; CUB: number; KVB: number } }) => {
+const Header = ({ onMenuToggle, bankAccounts, walletBalances }: { onMenuToggle: () => void; bankAccounts: { id: string; name: string; openingBalance: number; status: string }[]; walletBalances: Record<string, number> }) => {
   const [showWallet, setShowWallet] = React.useState(false);
   const totalBank = bankAccounts.filter(b => b.status === 'ACTIVE').reduce((s, b) => {
-    if (b.id === 'CUB') return s + walletBalances.CUB;
-    if (b.id === 'KVB') return s + walletBalances.KVB;
-    return s + b.openingBalance;
+    const bal = walletBalances[b.id] ?? walletBalances[b.name] ?? b.openingBalance;
+    return s + bal;
   }, 0);
 
   return (
@@ -204,14 +218,6 @@ const Header = ({ onMenuToggle, openingBalances, bankAccounts, walletBalances }:
        <button onClick={onMenuToggle} className="lg:hidden text-slate-500 hover:text-brand-600 bg-white p-2 rounded-xl shadow-sm">
          <i className="fas fa-bars text-lg"></i>
        </button>
-       
-       <div className="hidden md:flex items-center gap-3 bg-white/60 backdrop-blur-md border border-white/50 px-4 py-2 rounded-2xl shadow-sm">
-         <div className="flex h-2 w-2 relative">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-         </div>
-         <span className="text-xs font-semibold text-slate-600 tracking-wide">System Operational</span>
-       </div>
     </div>
 
     <div className="flex items-center gap-3">
@@ -235,31 +241,28 @@ const Header = ({ onMenuToggle, openingBalances, bankAccounts, walletBalances }:
              <div className="absolute top-12 right-0 bg-white rounded-2xl shadow-2xl border border-slate-200 z-20 min-w-[280px] p-3">
                <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2 pb-2 mb-1 border-b border-slate-100">Wallet Balances</div>
                <div className="space-y-1">
-                 {/* Cash */}
                  <div className="flex items-center justify-between bg-emerald-50 rounded-xl px-3 py-2 border border-emerald-100">
                    <div className="flex items-center gap-2">
                      <i className="fas fa-cash-register text-emerald-600 text-xs"></i>
                      <span className="text-[10px] font-black text-emerald-700 uppercase tracking-wider">Cash Drawer</span>
                    </div>
-                   <span className="text-sm font-black text-emerald-800">₹{walletBalances.CASH.toLocaleString()}</span>
+                   <span className="text-sm font-black text-emerald-800">{walletBalances.CASH.toLocaleString()}</span>
                  </div>
-                 {/* Banks */}
                  {bankAccounts.filter(b => b.status === 'ACTIVE').map(bank => (
                    <div key={bank.id} className="flex items-center justify-between bg-blue-50 rounded-xl px-3 py-2 border border-blue-100">
                      <div className="flex items-center gap-2">
                        <i className="fas fa-building-columns text-blue-600 text-xs"></i>
                        <span className="text-[10px] font-black text-blue-700 uppercase tracking-wider">{bank.name}</span>
                      </div>
-                     <span className="text-sm font-black text-blue-800">₹{(bank.id === 'CUB' ? walletBalances.CUB : bank.id === 'KVB' ? walletBalances.KVB : bank.openingBalance).toLocaleString()}</span>
+                     <span className="text-sm font-black text-blue-800">{(walletBalances[bank.id] ?? walletBalances[bank.name] ?? bank.openingBalance).toLocaleString()}</span>
                    </div>
                  ))}
-                 {/* Total */}
                  <div className="flex items-center justify-between bg-indigo-600 rounded-xl px-3 py-2 mt-1">
                    <div className="flex items-center gap-2">
                      <i className="fas fa-chart-line text-indigo-200 text-xs"></i>
                      <span className="text-[10px] font-black text-indigo-100 uppercase tracking-wider">Total Bank</span>
                    </div>
-                   <span className="text-sm font-black text-white">₹{totalBank.toLocaleString()}</span>
+                   <span className="text-sm font-black text-white">{totalBank.toLocaleString()}</span>
                  </div>
                </div>
              </div>
@@ -293,10 +296,11 @@ const App: React.FC = () => {
     const savedUser = localStorage.getItem('currentUser');
     return savedUser ? JSON.parse(savedUser).role : 'OWNER';
   });
-  const [expenseCategories, setExpenseCategories] = useState(['Office Rent', 'Staff Salary', 'Transport', 'Electricity', 'Packaging']);
+  const [expenseCategories, setExpenseCategories] = useState(['Office Rent', 'Staff Salary', 'Transport', 'Electricity', 'Packaging', 'DRAWINGS']);
   const [savingCategories, setSavingCategories] = useState(['LIC', 'SIP', 'CHIT_SAVINGS', 'GOLD_SAVINGS', 'FIXED_DEPOSIT']);
   
   const [otherBusinesses, setOtherBusinesses] = useState(['FITO6', 'FITOBOWL', 'TRANSPORT_DIV']);
+  const [businessUnitInvestments, setBusinessUnitInvestments] = useState<Record<string, number>>({});
   const [incomeCategories, setIncomeCategories] = useState(['Salary', 'Commission', 'Incentives']);
 
   // --- UPDATED STAFF USERS WITH PERMISSIONS ---
@@ -316,6 +320,7 @@ const App: React.FC = () => {
   const [chitGroups, setChitGroups] = useState<ChitGroup[]>([]);
   const [investments, setInvestments] = useState<Investment[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [journals, setJournals] = useState<JournalEntry[]>([]);
 
   // Load data from backend after login
   useEffect(() => {
@@ -336,7 +341,8 @@ const App: React.FC = () => {
       liabilitiesResult,
       chitGroupsResult,
       investmentsResult,
-      settingsResult
+      settingsResult,
+      journalsResult
     ] = await Promise.allSettled([
       customerAPI.getAll(),
       invoiceAPI.getAll(),
@@ -344,7 +350,8 @@ const App: React.FC = () => {
       liabilityAPI.getAll(),
       chitAPI.getAll(),
       investmentAPI.getAll(),
-      settingsAPI.get()
+      settingsAPI.get(),
+      journalAPI.getAll()
     ]);
 
     if (customersResult.status === 'fulfilled') setCustomers(customersResult.value);
@@ -353,14 +360,17 @@ const App: React.FC = () => {
     if (liabilitiesResult.status === 'fulfilled') setLiabilities(liabilitiesResult.value);
     if (chitGroupsResult.status === 'fulfilled') setChitGroups(chitGroupsResult.value);
     if (investmentsResult.status === 'fulfilled') setInvestments(investmentsResult.value);
+    if (journalsResult.status === 'fulfilled') setJournals(journalsResult.value);
 
     if (settingsResult.status === 'fulfilled' && settingsResult.value) {
       const s = settingsResult.value;
       if (s.expenseCategories) setExpenseCategories(s.expenseCategories);
       if (s.savingCategories) setSavingCategories(s.savingCategories);
       if (s.otherBusinesses) setOtherBusinesses(s.otherBusinesses);
+      if (s.businessUnitInvestments) setBusinessUnitInvestments(s.businessUnitInvestments);
       if (s.incomeCategories) setIncomeCategories(s.incomeCategories);
       if (s.bankAccounts) setBankAccounts(s.bankAccounts);
+      if (s.openingBalances) setOpeningBalances(prev => ({ ...prev, ...s.openingBalances }));
     }
 
     // Load users and audit logs
@@ -386,44 +396,45 @@ const App: React.FC = () => {
     setLoading(false);
   };
 
-  // Statistics Calculation (Unchanged logic, just keeping it here)
+  // Statistics Calculation (with dynamic banks and Journal integration)
   const stats: DashboardStats = useMemo(() => {
     const safePayments = payments || [];
     const safeInvoices = invoices.filter(inv => !inv.isVoid);
     const safeCustomers = customers || [];
     const safeInvestments = investments || [];
     const safeLiabilities = liabilities || [];
+    const safeJournals = journals || [];
 
-    const cashInHand = safePayments.reduce((acc, p) => {
+    // Journal effects (integrate into balance sheet)
+    const journalEffects = computeJournalEffects(safeJournals);
+
+    // Cash: opening + payment effects + journal effects
+    let cashInHand = safePayments.reduce((acc, p) => {
         if (p.mode === 'CASH') return p.type === 'IN' ? acc + p.amount : acc - p.amount;
         if (p.voucherType === 'CONTRA' && p.targetMode === 'CASH') return acc + p.amount;
         return acc;
     }, openingBalances.CASH);
+    cashInHand += journalEffects.cash;
 
-    let bankCUB = 0; 
-    let bankKVB = 0;
-
-    const cubAccount = bankAccounts.find(b => b.id === 'CUB');
-    if (cubAccount) {
-        bankCUB = safePayments.reduce((acc, p) => {
-            if (p.mode === 'CUB') return p.type === 'IN' ? acc + p.amount : acc - p.amount;
-            if (p.voucherType === 'CONTRA' && p.targetMode === 'CUB') return acc + p.amount;
-            return acc;
-        }, cubAccount.openingBalance);
+    // Dynamic bank balances: iterate over ALL active bank accounts (key = bank name)
+    const bankBalances: Record<string, number> = {};
+    for (const bank of bankAccounts.filter(b => b.status === 'ACTIVE')) {
+      let bal = safePayments.reduce((acc, p) => {
+        if (p.mode === bank.name) return p.type === 'IN' ? acc + p.amount : acc - p.amount;
+        if (p.voucherType === 'CONTRA' && p.targetMode === bank.name) return acc + p.amount;
+        return acc;
+      }, bank.openingBalance);
+      bal += journalEffects.bankBalances[bank.name] || journalEffects.bankBalances[bank.id] || 0;
+      bankBalances[bank.name] = bal;
     }
 
-    const kvbAccount = bankAccounts.find(b => b.id === 'KVB');
-    if (kvbAccount) {
-        bankKVB = safePayments.reduce((acc, p) => {
-            if (p.mode === 'KVB') return p.type === 'IN' ? acc + p.amount : acc - p.amount;
-            if (p.voucherType === 'CONTRA' && p.targetMode === 'KVB') return acc + p.amount;
-            return acc;
-        }, kvbAccount.openingBalance);
-    }
+    const bankCUB = bankBalances['CUB'] ?? 0;
+    const bankKVB = bankBalances['KVB'] ?? 0;
     
     const customerBalances = safeCustomers.map(cust => {
         const totalInvoiced = safeInvoices.filter(inv => inv.customerId === cust.id).reduce((acc, inv) => acc + inv.amount, 0);
-        const totalPaid = safePayments.filter(p => p.sourceId === cust.id && p.type === 'IN' && p.category !== 'PRINCIPAL_RECOVERY').reduce((acc, p) => acc + p.amount, 0);
+        const custPay = safePayments.filter(p => p.sourceId === cust.id);
+        const totalPaid = sumPaymentsInForLedger(custPay);
         return totalInvoiced - totalPaid;
     });
 
@@ -465,11 +476,11 @@ const App: React.FC = () => {
     }, 0);
 
     return {
-      cashInHand, bankCUB, bankKVB, receivableOutstanding, payableOutstanding,
+      cashInHand, bankCUB, bankKVB, bankBalances, receivableOutstanding, payableOutstanding,
       royaltyIncomeMonth, interestIncomeMonth, chitIncomeMonth, expensesMonth, netProfitMonth,
       totalInvestments, advancesOwed 
     };
-  }, [invoices, payments, customers, investments, openingBalances, liabilities, bankAccounts]);
+  }, [invoices, payments, customers, investments, openingBalances, liabilities, bankAccounts, journals]);
 
   const handleLogin = (user: StaffUser) => {
     setCurrentUser(user);
@@ -541,7 +552,7 @@ const App: React.FC = () => {
         <Sidebar role={role} onLogout={handleLogout} user={currentUser} />
         
         <div className="flex-1 flex flex-col h-full overflow-hidden relative">
-          <Header onMenuToggle={() => setIsMobileMenuOpen(!isMobileMenuOpen)} openingBalances={openingBalances} bankAccounts={bankAccounts} walletBalances={{ CASH: stats.cashInHand, CUB: stats.bankCUB, KVB: stats.bankKVB }} />
+          <Header onMenuToggle={() => setIsMobileMenuOpen(!isMobileMenuOpen)} bankAccounts={bankAccounts} walletBalances={{ CASH: stats.cashInHand, ...stats.bankBalances }} />
           <main className="flex-1 overflow-y-auto px-4 md:px-8 pb-8 custom-scrollbar scroll-smooth">
             <Suspense fallback={
               <div className="h-full w-full flex items-center justify-center">
@@ -558,6 +569,7 @@ const App: React.FC = () => {
                   invoices={invoices} setInvoices={setInvoices} 
                   customers={customers} chitGroups={chitGroups} 
                   setChitGroups={setChitGroups} liabilities={liabilities}
+                  payments={payments}
                   role={role} setAuditLogs={setAuditLogs}
                   currentUser={currentUser} 
                 />} />
@@ -580,6 +592,12 @@ const App: React.FC = () => {
                   bankAccounts={bankAccounts}
                   setBankAccounts={setBankAccounts}
                 />} />
+                <Route path="/contra" element={<Contra
+                  payments={payments} setPayments={setPayments}
+                  bankAccounts={bankAccounts} setBankAccounts={setBankAccounts}
+                  openingBalances={openingBalances} setOpeningBalances={setOpeningBalances}
+                  role={role}
+                />} />
                 <Route path="/reports/*" element={<ReportCenter 
                   payments={payments} invoices={invoices} customers={customers} 
                   liabilities={liabilities} stats={stats} role={role}
@@ -589,17 +607,20 @@ const App: React.FC = () => {
                   investments={investments}
                   bankAccounts={bankAccounts}
                   chitGroups={chitGroups}
+                  journals={journals}
                 />} />
-                <Route path="/savings" element={<InvestmentList 
-                  investments={investments} 
-                  setInvestments={setInvestments} 
-                  savingCategories={savingCategories} 
-                  payments={payments} 
-                  setPayments={setPayments} 
+                <Route path="/savings" element={<InvestmentList
+                  investments={investments}
+                  setInvestments={setInvestments}
+                  savingCategories={savingCategories}
+                  payments={payments}
+                  setPayments={setPayments}
+                  currentUser={currentUser}
                 />} />
-                <Route path="/loans" element={<LoanList liabilities={liabilities} setLiabilities={setLiabilities} customers={customers} setCustomers={setCustomers} invoices={invoices} payments={payments} setPayments={setPayments} />} />
+                <Route path="/loans" element={<LoanList liabilities={liabilities} setLiabilities={setLiabilities} customers={customers} setCustomers={setCustomers} invoices={invoices} payments={payments} setPayments={setPayments} bankAccounts={bankAccounts} currentUser={currentUser} />} />
                 <Route path="/chits" element={<ChitList chitGroups={chitGroups} setChitGroups={setChitGroups} customers={customers} invoices={invoices} investments={investments} setInvestments={setInvestments} setPayments={setPayments} setInvoices={setInvoices} currentUser={currentUser} />} />
-                <Route path="/business" element={<BusinessPerformance payments={payments} otherBusinesses={otherBusinesses} />} />
+                <Route path="/business" element={<BusinessPerformance payments={payments} setPayments={setPayments} otherBusinesses={otherBusinesses} setOtherBusinesses={setOtherBusinesses} businessUnitInvestments={businessUnitInvestments} setBusinessUnitInvestments={setBusinessUnitInvestments} bankAccounts={bankAccounts} openingBalances={openingBalances} setOpeningBalances={setOpeningBalances} />} />
+                <Route path="/journal" element={<Journal journals={journals} setJournals={setJournals} currentUser={currentUser} />} />
                 <Route path="/settings" element={<Settings 
                   expenseCategories={expenseCategories} setExpenseCategories={setExpenseCategories} 
                   savingCategories={savingCategories} setSavingCategories={setSavingCategories}
@@ -611,6 +632,7 @@ const App: React.FC = () => {
                   openingBalances={openingBalances} setOpeningBalances={setOpeningBalances}
                   auditLogs={auditLogs} setAuditLogs={setAuditLogs}
                   otherBusinesses={otherBusinesses} setOtherBusinesses={setOtherBusinesses}
+                  businessUnitInvestments={businessUnitInvestments} setBusinessUnitInvestments={setBusinessUnitInvestments}
                   incomeCategories={incomeCategories} setIncomeCategories={setIncomeCategories}
                   liabilities={liabilities} setLiabilities={setLiabilities}
                   investments={investments} setInvestments={setInvestments}
@@ -627,3 +649,4 @@ const App: React.FC = () => {
 };
 
 export default App;
+

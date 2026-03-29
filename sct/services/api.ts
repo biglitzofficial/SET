@@ -280,6 +280,9 @@ export const investmentAPI = {
       method: 'POST',
       body: JSON.stringify(transaction),
     }),
+
+  delete: (id: string) =>
+    apiRequest<void>(`/investments/${id}`, { method: 'DELETE' }),
 };
 
 // Due Dates API (for Outstanding Tracker)
@@ -302,5 +305,13 @@ export const dueDatesAPI = {
       method: 'POST',
       body: JSON.stringify({ items }),
     }),
+};
+
+// Journal API
+export const journalAPI = {
+  getAll: () => apiRequest<any[]>('/journals'),
+  create: (entry: any) => apiRequest<any>('/journals', { method: 'POST', body: JSON.stringify(entry) }),
+  update: (id: string, entry: any) => apiRequest<any>(`/journals/${id}`, { method: 'PUT', body: JSON.stringify(entry) }),
+  delete: (id: string) => apiRequest<void>(`/journals/${id}`, { method: 'DELETE' }),
 };
 

@@ -1,7 +1,7 @@
 import express from 'express';
 import { body, validationResult } from 'express-validator';
 import { db, COLLECTIONS } from '../config/firebase.js';
-import { authenticate, checkPermission } from '../middleware/auth.js';
+import { authenticate, checkPermission, assertStaffCanEditOrDelete } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -122,6 +122,8 @@ router.put('/:id', [
     if (!doc.exists) {
       return res.status(404).json({ error: { message: 'Customer not found' } });
     }
+    const err = assertStaffCanEditOrDelete(req, { ...doc.data(), id: doc.id }, 'edit');
+    if (err) return res.status(err.status).json({ error: { message: err.message } });
 
     const updateData = {
       ...req.body,
@@ -167,6 +169,8 @@ router.delete('/:id', [
     if (!doc.exists) {
       return res.status(404).json({ error: { message: 'Customer not found' } });
     }
+    const delErr = assertStaffCanEditOrDelete(req, { ...doc.data(), id: doc.id }, 'delete');
+    if (delErr) return res.status(delErr.status).json({ error: { message: delErr.message } });
 
     await docRef.delete();
 

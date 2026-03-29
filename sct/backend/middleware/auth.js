@@ -88,7 +88,6 @@ export const checkPermission = (permission) => {
     }
 
     if (req.user.role === 'OWNER') {
-      // Owners have all permissions
       return next();
     }
 
@@ -98,4 +97,26 @@ export const checkPermission = (permission) => {
 
     next();
   };
+};
+
+/** Returns true if record date/createdAt/startDate is within today (local date). */
+export const isRecordFromToday = (record) => {
+  const ts = record.date ?? record.startDate ?? record.createdAt;
+  if (ts == null) return false;
+  const d = new Date(typeof ts === 'number' ? ts : ts);
+  const today = new Date();
+  return d.getDate() === today.getDate() && d.getMonth() === today.getMonth() && d.getFullYear() === today.getFullYear();
+};
+
+/** For edit/delete: OWNER always allowed. Staff with permission only if record is from today. Returns error obj or null. */
+export const assertStaffCanEditOrDelete = (req, record, action = 'edit') => {
+  if (req.user.role === 'OWNER') return null;
+  const perm = action === 'delete' ? 'canDelete' : 'canEdit';
+  if (!req.user.permissions?.[perm]) {
+    return { status: 403, message: `Permission denied: ${perm}` };
+  }
+  if (!isRecordFromToday(record)) {
+    return { status: 403, message: 'Staff can only edit or delete entries dated today. Past entries require owner access.' };
+  }
+  return null;
 };

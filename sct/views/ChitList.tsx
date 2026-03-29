@@ -2,6 +2,7 @@
 import React, { useState, useMemo } from 'react';
 import { ChitGroup, Customer, Invoice, Investment, ChitAuction, Payment, StaffUser } from '../types';
 import { chitAPI, invoiceAPI, investmentAPI } from '../services/api';
+import { canStaffEditRecord, canStaffDeleteRecord } from '../utils/authHelpers';
 
 interface ChitListProps {
   chitGroups: ChitGroup[];
@@ -144,7 +145,7 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
 
   // --- LOGIC: MOVE TO SAVINGS ---
   const handleAddToSavings = async (auction: ChitAuction, group: ChitGroup) => {
-    const confirm = window.confirm(`Move ₹${auction.winnerHand.toLocaleString()} to Savings Hub?`);
+    const confirm = window.confirm(`Move ${auction.winnerHand.toLocaleString()} to Savings Hub?`);
     if(!confirm) return;
 
     const newInvestment: Investment = {
@@ -335,8 +336,8 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
                   <tr key={group.id} className="border-b border-slate-50 hover:bg-orange-50/40 transition">
                     <td className="px-5 py-4 font-black text-slate-400">{idx + 1}</td>
                     <td className="px-5 py-4 font-black text-slate-800 uppercase italic tracking-tight">{group.name}</td>
-                    <td className="px-5 py-4 font-black text-slate-700">₹{group.totalValue.toLocaleString()}</td>
-                    <td className="px-5 py-4 font-black text-slate-700">₹{group.monthlyInstallment.toLocaleString()}</td>
+                    <td className="px-5 py-4 font-black text-slate-700">{group.totalValue.toLocaleString()}</td>
+                    <td className="px-5 py-4 font-black text-slate-700">{group.monthlyInstallment.toLocaleString()}</td>
                     <td className="px-5 py-4 font-black text-slate-700">{group.members.length}</td>
                     <td className="px-5 py-4 font-black text-orange-600">{filledCount} / {group.durationMonths}</td>
                     <td className="px-5 py-4">
@@ -358,10 +359,10 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
                       <div className="flex items-center gap-4">
                         <button onClick={() => setSelectedGroupId(group.id)} className="text-[10px] font-black uppercase tracking-widest text-indigo-600 hover:underline">Ledger</button>
                         <button onClick={() => setShowAuctionTableGroupId(group.id)} className="text-[10px] font-black uppercase tracking-widest text-emerald-600 hover:underline">Auctions</button>
-                        {currentUser?.permissions.canEdit && (
+                        {canStaffEditRecord(currentUser, group) && (
                           <button onClick={() => openEdit(group)} className="text-slate-300 hover:text-indigo-600 transition"><i className="fas fa-pen"></i></button>
                         )}
-                        {currentUser?.permissions.canDelete && (
+                        {canStaffDeleteRecord(currentUser, group) && (
                           <button onClick={async () => {
                             if (!confirm(`Are you sure you want to delete "${group.name}"? This will also delete all related invoices. This cannot be undone.`)) return;
                             try {
@@ -391,7 +392,7 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
             <tfoot>
               <tr className="bg-slate-50 border-t-2 border-slate-200">
                 <td colSpan={3} className="px-5 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400">Total Groups: {chitGroups.length}</td>
-                <td className="px-5 py-4 font-black text-slate-800">₹{chitGroups.reduce((s, g) => s + g.monthlyInstallment, 0).toLocaleString()}</td>
+                <td className="px-5 py-4 font-black text-slate-800">{chitGroups.reduce((s, g) => s + g.monthlyInstallment, 0).toLocaleString()}</td>
                 <td className="px-5 py-4 font-black text-slate-800">{chitGroups.reduce((s, g) => s + g.members.length, 0)}</td>
                 <td colSpan={4}></td>
               </tr>
@@ -417,12 +418,12 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
                   </span>
                 </div>
                 <h3 className="font-black text-slate-800 text-xl uppercase leading-none mb-2 italic tracking-tighter">{group.name}</h3>
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-6">Valuation: ₹{group.totalValue.toLocaleString()}</p>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-6">Valuation: {group.totalValue.toLocaleString()}</p>
                 
                 <div className="space-y-4">
                    <div className="flex justify-between items-center text-xs">
                       <span className="font-black text-slate-400 uppercase tracking-widest">Installment</span>
-                      <span className="font-black text-slate-800">₹{group.monthlyInstallment.toLocaleString()}</span>
+                      <span className="font-black text-slate-800">{group.monthlyInstallment.toLocaleString()}</span>
                    </div>
                    <div className="flex justify-between items-center text-xs">
                       <span className="font-black text-slate-400 uppercase tracking-widest">Total Slots</span>
@@ -441,15 +442,15 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
                   <div className="grid grid-cols-3 border-t border-slate-100 bg-slate-50 divide-x divide-slate-100">
                     <div className="px-4 py-3 text-center">
                       <div className="text-[8px] font-black uppercase tracking-wider text-slate-400">Total Vasool</div>
-                      <div className="text-[11px] font-black text-emerald-600 mt-0.5">₹{totalVasool.toLocaleString()}</div>
+                      <div className="text-[11px] font-black text-emerald-600 mt-0.5">{totalVasool.toLocaleString()}</div>
                     </div>
                     <div className="px-4 py-3 text-center">
                       <div className="text-[8px] font-black uppercase tracking-wider text-slate-400">Company Amt</div>
-                      <div className="text-[11px] font-black text-indigo-600 mt-0.5">₹{totalCompany.toLocaleString()}</div>
+                      <div className="text-[11px] font-black text-indigo-600 mt-0.5">{totalCompany.toLocaleString()}</div>
                     </div>
                     <div className="px-4 py-3 text-center">
                       <div className="text-[8px] font-black uppercase tracking-wider text-slate-400">Total Hands</div>
-                      <div className="text-[11px] font-black text-orange-600 mt-0.5">₹{totalHands.toLocaleString()}</div>
+                      <div className="text-[11px] font-black text-orange-600 mt-0.5">{totalHands.toLocaleString()}</div>
                     </div>
                   </div>
                 );
@@ -460,10 +461,10 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
                     <button onClick={() => setShowAuctionTableGroupId(group.id)} className="text-[10px] font-black uppercase tracking-widest text-emerald-600 hover:underline">Auction Table</button>
                  </div>
                  <div className="flex gap-3">
-                    {currentUser?.permissions.canEdit && (
+                    {canStaffEditRecord(currentUser, group) && (
                        <button onClick={() => openEdit(group)} className="text-slate-300 hover:text-indigo-600 transition"><i className="fas fa-pen"></i></button>
                     )}
-                    {currentUser?.permissions.canDelete && (
+                    {canStaffDeleteRecord(currentUser, group) && (
                        <button onClick={async () => {
                           if (!confirm(`Are you sure you want to delete "${group.name}"? This will also delete all related invoices. This cannot be undone.`)) return;
                           try {
@@ -519,11 +520,11 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
                     </div>
                     <div className="grid grid-cols-2 gap-4">
                        <div>
-                          <label className="text-[10px] font-black text-slate-400 uppercase mb-2 block tracking-widest italic">Chit Value (₹)</label>
+                          <label className="text-[10px] font-black text-slate-400 uppercase mb-2 block tracking-widest italic">Chit Value ()</label>
                           <input required type="number" className="w-full p-4 bg-slate-50 rounded-2xl font-black text-sm outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={formData.totalValue || ''} onChange={e => setFormData({...formData, totalValue: Number(e.target.value)})} />
                        </div>
                        <div>
-                          <label className="text-[10px] font-black text-slate-400 uppercase mb-2 block tracking-widest italic">Installment (₹)</label>
+                          <label className="text-[10px] font-black text-slate-400 uppercase mb-2 block tracking-widest italic">Installment ()</label>
                           <input required type="number" className="w-full p-4 bg-slate-50 rounded-2xl font-black text-sm outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={formData.monthlyInstallment || ''} onChange={e => setFormData({...formData, monthlyInstallment: Number(e.target.value)})} />
                        </div>
                     </div>
@@ -716,7 +717,7 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
                  <div className="grid grid-cols-4 gap-4 mt-8">
                     <div className="bg-slate-800 p-4 rounded-2xl border border-slate-700">
                        <div className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1">Monthly Installment</div>
-                       <div className="text-xl font-black text-white tabular-nums">₹{selectedGroup.monthlyInstallment.toLocaleString()}</div>
+                       <div className="text-xl font-black text-white tabular-nums">{selectedGroup.monthlyInstallment.toLocaleString()}</div>
                     </div>
                     <div className="bg-slate-800 p-4 rounded-2xl border border-slate-700">
                        <div className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1">Commission Rate</div>
@@ -751,17 +752,17 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
 
                              <div className="flex-1 border-l border-slate-100 pl-6">
                                 <div className="text-[10px] font-black text-indigo-600 uppercase mb-1">{auc.winnerName}</div>
-                                <div className="text-xs font-bold text-slate-500">Won Pot: <span className="text-slate-800 font-black">₹{auc.winnerHand.toLocaleString()}</span></div>
+                                <div className="text-xs font-bold text-slate-500">Won Pot: <span className="text-slate-800 font-black">{auc.winnerHand.toLocaleString()}</span></div>
                              </div>
                              <div className="text-right flex flex-col items-end">
                                 <div className="text-[9px] font-black text-rose-400 uppercase tracking-widest mb-1">Bid Amount</div>
-                                <div className="text-lg font-black text-rose-600">₹{auc.bidAmount.toLocaleString()}</div>
+                                <div className="text-lg font-black text-rose-600">{auc.bidAmount.toLocaleString()}</div>
                                 <div className="flex gap-2 mt-2">
                                     <button onClick={() => handleAddToSavings(auc, selectedGroup)} className="text-[8px] font-black uppercase tracking-widest bg-slate-900 text-white px-3 py-1 rounded hover:bg-orange-500 transition">
                                         <i className="fas fa-arrow-right-to-bracket mr-1"></i> To Savings
                                     </button>
                                     {/* DELETE BUTTON: Only show for the Latest Auction (Index 0 in Descending List) AND if user has permission */}
-                                    {index === 0 && currentUser?.permissions.canDelete && (
+                                    {index === 0 && canStaffDeleteRecord(currentUser, auc) && (
                                        <button 
                                           type="button"
                                           disabled={isRevertingAuction === auc.id}
@@ -868,12 +869,12 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
                                       </div>
                                       <div className="bg-white p-4 rounded-2xl border border-slate-200">
                                          <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Dividend/Profit</div>
-                                         <div className="text-xl font-black text-emerald-600">₹{stats.totalDividendEarned.toLocaleString()}</div>
+                                         <div className="text-xl font-black text-emerald-600">{stats.totalDividendEarned.toLocaleString()}</div>
                                          <div className="text-[8px] font-bold text-slate-400">Total discount earned</div>
                                       </div>
                                       <div className="bg-white p-4 rounded-2xl border border-slate-200">
                                          <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Net Amount Paid</div>
-                                         <div className="text-xl font-black text-slate-800">₹{stats.totalAmountPaid.toLocaleString()}</div>
+                                         <div className="text-xl font-black text-slate-800">{stats.totalAmountPaid.toLocaleString()}</div>
                                          <div className="text-[8px] font-bold text-slate-400">Actual cash outflow</div>
                                       </div>
                                    </div>
@@ -885,7 +886,7 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
                                       <h4 className="text-sm font-black text-slate-900 uppercase tracking-widest">Detailed Ledger (Seat #{stats.seatNumber})</h4>
                                       <div className="text-right">
                                          <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Installment</div>
-                                         <div className="text-xs font-bold">₹{selectedGroup.monthlyInstallment.toLocaleString()}</div>
+                                         <div className="text-xs font-bold">{selectedGroup.monthlyInstallment.toLocaleString()}</div>
                                       </div>
                                    </div>
                                    <table className="w-full text-left">
@@ -904,11 +905,11 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
                                             <tr key={row.month} className={`border-b border-slate-50 last:border-0 hover:bg-slate-50 ${row.status === 'FUTURE' ? 'opacity-50' : ''}`}>
                                                <td className="py-3">#{row.month}</td>
                                                <td className="py-3 text-slate-500">{new Date(row.date).toLocaleDateString()}</td>
-                                               <td className="py-3 text-right text-slate-400">₹{row.installment.toLocaleString()}</td>
+                                               <td className="py-3 text-right text-slate-400">{row.installment.toLocaleString()}</td>
                                                <td className="py-3 text-right text-emerald-600">
-                                                  {row.dividend > 0 ? `₹${row.dividend.toLocaleString()}` : '-'}
+                                                  {row.dividend > 0 ? `${row.dividend.toLocaleString()}` : '-'}
                                                </td>
-                                               <td className="py-3 text-right text-slate-900 font-black">₹{row.netPaid.toLocaleString()}</td>
+                                               <td className="py-3 text-right text-slate-900 font-black">{row.netPaid.toLocaleString()}</td>
                                                <td className="py-3 text-right">
                                                   <span className={`px-2 py-1 rounded text-[8px] uppercase tracking-widest ${
                                                      row.status === 'PAID' ? 'bg-emerald-100 text-emerald-700' : 
@@ -941,7 +942,7 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
               <div>
                 <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Auction Summary</div>
                 <h3 className="text-2xl font-black italic tracking-tighter text-white">{auctionTableGroup.name}</h3>
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">₹{auctionTableGroup.totalValue.toLocaleString()} Valuation • {auctionTableGroup.auctions.length} Auctions Conducted</p>
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">{auctionTableGroup.totalValue.toLocaleString()} Valuation • {auctionTableGroup.auctions.length} Auctions Conducted</p>
               </div>
               <button onClick={() => setShowAuctionTableGroupId(null)} className="h-11 w-11 bg-slate-800 rounded-full flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-700 transition"><i className="fas fa-times text-lg"></i></button>
             </div>
@@ -971,13 +972,13 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
                         <td className="px-3 py-3 font-black text-slate-800">{auctionTableGroup.name}</td>
                         <td className="px-3 py-3 font-bold text-slate-700 max-w-[160px] truncate">{takenBy}</td>
                         <td className="px-3 py-3 font-bold text-slate-600">{monthStr}</td>
-                        <td className="px-3 py-3 font-bold text-slate-800 tabular-nums">₹{auctionTableGroup.totalValue.toLocaleString()}</td>
-                        <td className="px-3 py-3 font-bold text-orange-600 tabular-nums">₹{auc.bidAmount.toLocaleString()}</td>
-                        <td className="px-3 py-3 font-bold text-slate-700 tabular-nums">₹{auc.commissionAmount.toLocaleString()}</td>
-                        <td className="px-3 py-3 font-bold text-indigo-600 tabular-nums">₹{auc.dividendPerMember.toLocaleString()}</td>
-                        <td className="px-3 py-3 font-bold text-slate-800 tabular-nums">₹{payablePerMember.toLocaleString()}</td>
-                        <td className="px-3 py-3 font-black text-emerald-700 tabular-nums">₹{auc.winnerHand.toLocaleString()}</td>
-                        <td className="px-3 py-3 font-bold text-slate-700 tabular-nums">₹{totalVasool.toLocaleString()}</td>
+                        <td className="px-3 py-3 font-bold text-slate-800 tabular-nums">{auctionTableGroup.totalValue.toLocaleString()}</td>
+                        <td className="px-3 py-3 font-bold text-orange-600 tabular-nums">{auc.bidAmount.toLocaleString()}</td>
+                        <td className="px-3 py-3 font-bold text-slate-700 tabular-nums">{auc.commissionAmount.toLocaleString()}</td>
+                        <td className="px-3 py-3 font-bold text-indigo-600 tabular-nums">{auc.dividendPerMember.toLocaleString()}</td>
+                        <td className="px-3 py-3 font-bold text-slate-800 tabular-nums">{payablePerMember.toLocaleString()}</td>
+                        <td className="px-3 py-3 font-black text-emerald-700 tabular-nums">{auc.winnerHand.toLocaleString()}</td>
+                        <td className="px-3 py-3 font-bold text-slate-700 tabular-nums">{totalVasool.toLocaleString()}</td>
                         <td className="px-3 py-3 font-bold text-slate-500 whitespace-nowrap">{new Date(auc.date).toLocaleDateString('en-IN')}</td>
                       </tr>
                     );
@@ -999,13 +1000,13 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
                     return (
                       <tr className="bg-emerald-50 border-t-2 border-emerald-300 font-black text-slate-900">
                         <td className="px-3 py-3 text-[10px] uppercase tracking-widest" colSpan={4}>Total <span className="text-emerald-700">({auctionTableGroup.auctions.length} auctions)</span></td>
-                        <td className="px-3 py-3 tabular-nums">₹{totals.chitValue.toLocaleString()}</td>
-                        <td className="px-3 py-3 tabular-nums text-orange-700">₹{totals.chitAmount.toLocaleString()}</td>
-                        <td className="px-3 py-3 tabular-nums">₹{totals.companyAmt.toLocaleString()}</td>
-                        <td className="px-3 py-3 tabular-nums text-indigo-700">₹{totals.kasar.toLocaleString()}</td>
-                        <td className="px-3 py-3 tabular-nums">₹{totals.payable.toLocaleString()}</td>
-                        <td className="px-3 py-3 tabular-nums text-emerald-700">₹{totals.toHand.toLocaleString()}</td>
-                        <td className="px-3 py-3 tabular-nums">₹{totals.vasool.toLocaleString()}</td>
+                        <td className="px-3 py-3 tabular-nums">{totals.chitValue.toLocaleString()}</td>
+                        <td className="px-3 py-3 tabular-nums text-orange-700">{totals.chitAmount.toLocaleString()}</td>
+                        <td className="px-3 py-3 tabular-nums">{totals.companyAmt.toLocaleString()}</td>
+                        <td className="px-3 py-3 tabular-nums text-indigo-700">{totals.kasar.toLocaleString()}</td>
+                        <td className="px-3 py-3 tabular-nums">{totals.payable.toLocaleString()}</td>
+                        <td className="px-3 py-3 tabular-nums text-emerald-700">{totals.toHand.toLocaleString()}</td>
+                        <td className="px-3 py-3 tabular-nums">{totals.vasool.toLocaleString()}</td>
                         <td className="px-3 py-3"></td>
                       </tr>
                     );
@@ -1070,3 +1071,4 @@ const ChitList: React.FC<ChitListProps> = ({ chitGroups, setChitGroups, customer
 };
 
 export default ChitList;
+

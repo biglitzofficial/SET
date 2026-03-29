@@ -1,7 +1,7 @@
 import express from 'express';
 import { body, validationResult } from 'express-validator';
 import { db, COLLECTIONS } from '../config/firebase.js';
-import { authenticate, checkPermission } from '../middleware/auth.js';
+import { authenticate, checkPermission, assertStaffCanEditOrDelete } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -21,8 +21,8 @@ router.get('/', authenticate, async (req, res) => {
 
     const snapshot = await query.orderBy('startDate', 'desc').get();
     const liabilities = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data()
+      ...doc.data(),
+      id: doc.id   // Always use Firestore doc ID; ignore any id stored in document
     }));
 
     res.json(liabilities);
@@ -41,7 +41,7 @@ router.get('/:id', authenticate, async (req, res) => {
       return res.status(404).json({ error: { message: 'Liability not found' } });
     }
 
-    res.json({ id: doc.id, ...doc.data() });
+    res.json({ ...doc.data(), id: doc.id });
   } catch (error) {
     console.error('Get liability error:', error);
     res.status(500).json({ error: { message: 'Failed to fetch liability' } });
@@ -65,8 +65,9 @@ router.post('/', [
       return res.status(400).json({ errors: errors.array() });
     }
 
+    const { id: _clientId, ...bodyRest } = req.body;
     const liabilityData = {
-      ...req.body,
+      ...bodyRest,
       remainingBalance: req.body.principal,
       createdAt: Date.now(),
       createdBy: req.user.id
@@ -75,8 +76,8 @@ router.post('/', [
     const docRef = await db.collection(COLLECTIONS.LIABILITIES).add(liabilityData);
     
     res.status(201).json({ 
-      id: docRef.id, 
-      ...liabilityData 
+      ...liabilityData,
+      id: docRef.id   // Always use Firestore doc ID; client-sent id is ignored
     });
   } catch (error) {
     console.error('Create liability error:', error);
@@ -96,6 +97,8 @@ router.put('/:id', [
     if (!doc.exists) {
       return res.status(404).json({ error: { message: 'Liability not found' } });
     }
+    const err = assertStaffCanEditOrDelete(req, doc.data(), 'edit');
+    if (err) return res.status(err.status).json({ error: { message: err.message } });
 
     const updateData = {
       ...req.body,
@@ -128,6 +131,8 @@ router.delete('/:id', [
     if (!doc.exists) {
       return res.status(404).json({ error: { message: 'Liability not found' } });
     }
+    const delErr = assertStaffCanEditOrDelete(req, doc.data(), 'delete');
+    if (delErr) return res.status(delErr.status).json({ error: { message: delErr.message } });
 
     await docRef.delete();
 

@@ -5,7 +5,8 @@ export const OPENING_BALANCES = {
   CASH: 0,
   CUB: 0,
   KVB: 0,
-  CAPITAL: 0 
+  CAPITAL: 0,
+  RETAINED_EARNINGS: 0
 };
 
 /**

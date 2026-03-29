@@ -1,9 +1,10 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { Customer, Invoice, Payment, AuditLog, StaffUser } from '../types';
 import { customerAPI } from '../services/api';
 import { createAuditLog, generateChangeSummary } from '../utils/auditLogger';
+import { computeOpening, sumPaymentsInForLedger } from '../utils/ledgerUtils';
 
 interface CustomerListProps {
   customers: Customer[];
@@ -19,6 +20,7 @@ type ViewType = 'ALL' | 'ROYALTY' | 'INTEREST' | 'CHIT' | 'GENERAL' | 'CREDITOR'
 
 const CustomerList: React.FC<CustomerListProps> = ({ customers, setCustomers, invoices, payments, setAuditLogs, currentUser }) => {
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const [showForm, setShowForm] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -61,13 +63,28 @@ const CustomerList: React.FC<CustomerListProps> = ({ customers, setCustomers, in
 
   const [formData, setFormData] = useState<Partial<Customer>>(initialForm);
 
+  // Net ledger balance per customer — MUST match Party Ledger (ReportCenter) / OutstandingReports formula
+  const customerNetLedgerMap = useMemo(() => {
+    const map: Record<string, number> = {};
+    customers.forEach(cust => {
+      const custInv = invoices.filter(i => i.customerId === cust.id && !i.isVoid);
+      const custPay = payments.filter(p => p.sourceId === cust.id);
+      const opening = computeOpening(cust);
+      const invIN = custInv.filter(i => i.direction === 'IN').reduce((s, i) => s + i.amount, 0);
+      const invOUT = custInv.filter(i => i.direction === 'OUT').reduce((s, i) => s + i.amount, 0);
+      const payIN = sumPaymentsInForLedger(custPay);
+      const payOUT = custPay.filter(p => p.type === 'OUT').reduce((s, p) => s + p.amount, 0);
+      map[cust.id] = (opening + invIN + payOUT) - (invOUT + payIN);
+    });
+    return map;
+  }, [customers, invoices, payments]);
+
   const getCustomerStats = (cid: string) => {
     const cust = customers.find(c => c.id === cid);
     const custInvoices = invoices.filter(inv => inv.customerId === cid);
     const totalRaised = custInvoices.reduce((acc, inv) => acc + inv.amount, 0);
-    const totalOutstanding = custInvoices.reduce((acc, inv) => acc + inv.balance, 0);
-    // Add opening balance to total outstanding
-    return { totalRaised, totalPaid: totalRaised - totalOutstanding, totalOutstanding: totalOutstanding + (cust?.openingBalance || 0) };
+    const unpaid = custInvoices.reduce((acc, inv) => acc + (inv.balance ?? inv.amount), 0);
+    return { totalRaised, totalPaid: totalRaised - unpaid, totalOutstanding: customerNetLedgerMap[cid] ?? 0 };
   };
 
   // 1. Process Data
@@ -117,18 +134,55 @@ const CustomerList: React.FC<CustomerListProps> = ({ customers, setCustomers, in
     return result;
   }, [customers, search, activeView, sortConfig, invoices]);
 
+  // General net outstanding per customer (same formula as OutstandingReports)
+  const customerGeneralMap = useMemo(() => {
+    const map: Record<string, number> = {};
+    customers.forEach(cust => {
+      const custInv = invoices.filter(i => i.customerId === cust.id && !i.isVoid);
+      const custPay = payments.filter(p => p.sourceId === cust.id);
+      const opening = computeOpening(cust);
+      const invIN  = custInv.filter(i => i.direction === 'IN').reduce((s, i) => s + i.amount, 0);
+      const invOUT = custInv.filter(i => i.direction === 'OUT').reduce((s, i) => s + i.amount, 0);
+      const payIN  = sumPaymentsInForLedger(custPay);
+      const payOUT = custPay.filter(p => p.type === 'OUT').reduce((s, p) => s + p.amount, 0);
+      const netLedger = (opening + invIN + payOUT) - (invOUT + payIN);
+
+      const chitInAmt  = custInv.filter(i => i.type === 'CHIT' && i.direction === 'IN').reduce((s, i) => s + i.amount, 0);
+      const chitOutAmt = custInv.filter(i => i.type === 'CHIT' && i.direction === 'OUT').reduce((s, i) => s + i.amount, 0);
+      const chitPaidIn  = custPay.filter(p => p.type === 'IN'  && (p.category === 'CHIT' || p.category === 'CHIT_FUND')).reduce((s, p) => s + p.amount, 0);
+      const chitPaidOut = custPay.filter(p => p.type === 'OUT' && (p.category === 'CHIT' || p.category === 'CHIT_FUND')).reduce((s, p) => s + p.amount, 0);
+      const chitNet = (chitInAmt + chitPaidOut) - (chitOutAmt + chitPaidIn);
+
+      const royaltyAmt  = custInv.filter(i => i.type === 'ROYALTY').reduce((s, i) => s + i.amount, 0);
+      const royaltyPaid = custPay.filter(p => p.type === 'IN' && p.category === 'ROYALTY').reduce((s, p) => s + p.amount, 0);
+      const royaltyNet  = royaltyAmt - royaltyPaid;
+
+      const interestAmt  = custInv.filter(i => i.type === 'INTEREST').reduce((s, i) => s + i.amount, 0);
+      const interestPaid = custPay.filter(p => p.type === 'IN' && p.category === 'INTEREST').reduce((s, p) => s + p.amount, 0);
+      const interestNet  = interestAmt - interestPaid;
+
+      // Interest Out: we owe them (exclude from General — it has its own tracking in OutstandingReports)
+      const interestOutAmt  = custInv.filter(i => i.type === 'INTEREST_OUT' && !i.isVoid).reduce((s, i) => s + i.amount, 0);
+      const interestOutPaid = custPay.filter(p => p.type === 'OUT' && p.category === 'LOAN_INTEREST').reduce((s, p) => s + p.amount, 0);
+      const interestOutNet  = Math.max(0, interestOutAmt - interestOutPaid);
+
+      // Remove interestPrincipal (Principal Lent), add creditPrincipal; exclude interestOut (Interest Out)
+      map[cust.id] = netLedger - chitNet - royaltyNet - interestNet - interestOutNet - (cust.interestPrincipal || 0) + (cust.creditPrincipal || 0);
+    });
+    return map;
+  }, [customers, invoices, payments]);
+
   // 2. Aggregate Totals
   const totals = useMemo(() => {
     return processedCustomers.reduce((acc, c) => {
       acc.royalty += c.royaltyAmount || 0;
-      acc.interestYield += c.isInterest ? (c.interestPrincipal * (c.interestRate / 100)) : 0;
-      acc.interestPayable += c.isLender ? (c.creditPrincipal * (c.interestRate / 100)) : 0;
       acc.principalLent += c.interestPrincipal || 0;
-      acc.principalBorrowed += c.creditPrincipal || 0;
+      acc.creditors += c.creditPrincipal || 0;
+      acc.general += customerGeneralMap[c.id] || 0;
       acc.outstanding += getCustomerStats(c.id).totalOutstanding;
       return acc;
-    }, { royalty: 0, interestYield: 0, interestPayable: 0, principalLent: 0, principalBorrowed: 0, outstanding: 0 });
-  }, [processedCustomers, invoices]);
+    }, { royalty: 0, principalLent: 0, creditors: 0, general: 0, outstanding: 0 });
+  }, [processedCustomers, invoices, customerGeneralMap]);
 
   const handleSort = (key: SortKey) => {
     setSortConfig(prev => ({
@@ -183,6 +237,35 @@ const CustomerList: React.FC<CustomerListProps> = ({ customers, setCustomers, in
         currentUser,
         oldData: customer
       }), ...prev]);
+    }
+  };
+
+  const handleToggleStatus = async (e: React.MouseEvent, customer: Customer) => {
+    e.stopPropagation();
+    const newStatus = customer.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
+
+    // Block deactivation if the customer has any outstanding balance
+    if (newStatus === 'INACTIVE') {
+      const stats = getCustomerStats(customer.id);
+      const hasOutstanding = stats.totalOutstanding > 0;
+      const hasPrincipal = (customer.interestPrincipal || 0) > 0;
+      const hasCredit = (customer.creditPrincipal || 0) > 0;
+      if (hasOutstanding || hasPrincipal || hasCredit) {
+        const lines = [
+          hasOutstanding && `• Outstanding dues: ${stats.totalOutstanding.toLocaleString()}`,
+          hasPrincipal   && `• Principal lent: ${customer.interestPrincipal.toLocaleString()}`,
+          hasCredit      && `• Creditor balance: ${customer.creditPrincipal.toLocaleString()}`,
+        ].filter(Boolean).join('\n');
+        alert(`Cannot mark "${customer.name}" as Inactive.\n\nPending balances must be cleared first:\n${lines}`);
+        return;
+      }
+    }
+
+    try {
+      await customerAPI.update(customer.id, { ...customer, status: newStatus });
+      setCustomers(prev => prev.map(c => c.id === customer.id ? { ...c, status: newStatus } : c));
+    } catch (err) {
+      console.error('Failed to toggle status:', err);
     }
   };
 
@@ -420,21 +503,20 @@ const CustomerList: React.FC<CustomerListProps> = ({ customers, setCustomers, in
               {(activeView === 'ALL' || activeView === 'INTEREST') && (
                 <>
                   <th className="px-6 py-5 text-right text-[10px] font-black uppercase tracking-widest text-emerald-600 cursor-pointer" onClick={() => handleSort('interestPrincipal')}>Principal Lent</th>
-                  <th className="px-6 py-5 text-center text-[10px] font-black uppercase tracking-widest text-slate-400">Rate</th>
-                  <th className="px-6 py-5 text-right text-[10px] font-black uppercase tracking-widest text-emerald-600 cursor-pointer" onClick={() => handleSort('interestYield')}>Yield</th>
+                  <th className="px-6 py-5 text-right text-[10px] font-black uppercase tracking-widest text-rose-500 cursor-pointer" onClick={() => handleSort('creditPrincipal')}>Creditors</th>
+                  <th className="px-6 py-5 text-right text-[10px] font-black uppercase tracking-widest text-slate-500 cursor-pointer">General</th>
                 </>
               )}
 
               {(activeView === 'CREDITOR') && (
                 <>
-                  <th className="px-6 py-5 text-right text-[10px] font-black uppercase tracking-widest text-rose-500 cursor-pointer" onClick={() => handleSort('creditPrincipal')}>Borrowed Principal</th>
-                  <th className="px-6 py-5 text-center text-[10px] font-black uppercase tracking-widest text-slate-400">Rate</th>
-                  <th className="px-6 py-5 text-right text-[10px] font-black uppercase tracking-widest text-rose-500 cursor-pointer" onClick={() => handleSort('interestYield')}>Interest Payable</th>
+                  <th className="px-6 py-5 text-right text-[10px] font-black uppercase tracking-widest text-rose-500 cursor-pointer" onClick={() => handleSort('creditPrincipal')}>Creditors</th>
+                  <th className="px-6 py-5 text-right text-[10px] font-black uppercase tracking-widest text-slate-500 cursor-pointer">General</th>
                 </>
               )}
 
               <th className="px-6 py-5 text-right text-[10px] font-black uppercase tracking-widest text-slate-400 cursor-pointer" onClick={() => handleSort('outstanding')}>Net Outstanding</th>
-              <th className="px-6 py-5 text-center text-[10px] font-black uppercase tracking-widest text-slate-400">Status</th>
+              <th className="px-6 py-5 text-center text-[10px] font-black uppercase tracking-widest text-slate-400 cursor-pointer select-none">Status</th>
               <th className="px-6 py-5 text-right text-[10px] font-black uppercase tracking-widest text-slate-400">Action</th>
             </tr>
           </thead>
@@ -456,7 +538,12 @@ const CustomerList: React.FC<CustomerListProps> = ({ customers, setCustomers, in
                   <td className="px-6 py-5 whitespace-nowrap">
                     <div className="flex items-center gap-3">
                        <div>
-                          <div className="text-sm font-bold text-slate-800 uppercase">{customer.name}</div>
+                          <div
+                            className="text-sm font-bold text-slate-800 uppercase hover:text-indigo-600 hover:underline cursor-pointer transition-colors"
+                            onClick={e => { e.stopPropagation(); navigate('/reports/accounts', { state: { selectedId: customer.id } }); }}
+                          >
+                            {customer.name}
+                          </div>
                           <div className="text-[10px] font-bold text-slate-400">{customer.phone}</div>
                        </div>
                        {/* Role Icons Grid */}
@@ -473,44 +560,54 @@ const CustomerList: React.FC<CustomerListProps> = ({ customers, setCustomers, in
                   {/* DYNAMIC DATA CELLS */}
                   {(activeView === 'ALL' || activeView === 'ROYALTY') && (
                     <td className="px-6 py-5 whitespace-nowrap text-right text-sm font-display font-bold text-purple-700">
-                      {customer.isRoyalty ? `₹${customer.royaltyAmount.toLocaleString()}` : <span className="text-slate-200">-</span>}
+                      {customer.isRoyalty ? `${customer.royaltyAmount.toLocaleString()}` : <span className="text-slate-200">-</span>}
                     </td>
                   )}
 
                   {(activeView === 'ALL' || activeView === 'INTEREST') && (
                     <>
                       <td className="px-6 py-5 whitespace-nowrap text-right text-sm font-display font-black text-emerald-600">
-                        {customer.isInterest && customer.interestPrincipal > 0 ? `₹${customer.interestPrincipal.toLocaleString()}` : <span className="text-slate-200">-</span>}
+                        {customer.isInterest && customer.interestPrincipal > 0 ? customer.interestPrincipal.toLocaleString() : <span className="text-slate-200">-</span>}
                       </td>
-                      <td className="px-6 py-5 whitespace-nowrap text-center text-xs font-bold text-slate-500">
-                        {customer.isInterest && customer.interestRate > 0 ? `${customer.interestRate}%` : <span className="text-slate-200">-</span>}
+                      <td className="px-6 py-5 whitespace-nowrap text-right text-sm font-display font-black text-rose-500">
+                        {customer.creditPrincipal > 0 ? customer.creditPrincipal.toLocaleString() : <span className="text-slate-200">-</span>}
                       </td>
-                      <td className="px-6 py-5 whitespace-nowrap text-right text-sm font-display font-black text-emerald-600">
-                        {interestRec > 0 ? `₹${interestRec.toLocaleString()}` : <span className="text-slate-200">-</span>}
+                      <td className="px-6 py-5 whitespace-nowrap text-right text-sm font-display font-black">
+                        {(() => { const g = customerGeneralMap[customer.id] || 0; return g !== 0 ? <span className={g > 0 ? 'text-slate-700' : 'text-rose-500'}>{g < 0 ? '−' : ''}{Math.abs(g).toLocaleString()}</span> : <span className="text-slate-200">-</span>; })()}
                       </td>
                     </>
                   )}
 
                   {(activeView === 'CREDITOR') && (
                     <>
-                      <td className="px-6 py-5 whitespace-nowrap text-right text-sm font-display font-black text-rose-600">
-                        {customer.creditPrincipal > 0 ? `₹${customer.creditPrincipal.toLocaleString()}` : '-'}
+                      <td className="px-6 py-5 whitespace-nowrap text-right text-sm font-display font-black text-rose-500">
+                        {customer.creditPrincipal > 0 ? customer.creditPrincipal.toLocaleString() : <span className="text-slate-200">-</span>}
                       </td>
-                      <td className="px-6 py-5 whitespace-nowrap text-center text-xs font-bold text-slate-500">
-                        {customer.interestRate > 0 ? `${customer.interestRate}%` : '-'}
-                      </td>
-                      <td className="px-6 py-5 whitespace-nowrap text-right text-sm font-display font-black text-rose-600">
-                        {interestPay > 0 ? `₹${interestPay.toLocaleString()}` : '-'}
+                      <td className="px-6 py-5 whitespace-nowrap text-right text-sm font-display font-black">
+                        {(() => { const g = customerGeneralMap[customer.id] || 0; return g !== 0 ? <span className={g > 0 ? 'text-slate-700' : 'text-rose-500'}>{g < 0 ? '−' : ''}{Math.abs(g).toLocaleString()}</span> : <span className="text-slate-200">-</span>; })()}
                       </td>
                     </>
                   )}
 
-                  <td className={`px-6 py-5 whitespace-nowrap text-right text-sm font-display font-black italic ${stats.totalOutstanding > 0 ? 'text-rose-600' : 'text-slate-300'}`}>
-                    {stats.totalOutstanding !== 0 ? `₹${Math.abs(stats.totalOutstanding).toLocaleString()}` : '-'}
+                  <td
+                    className={`px-6 py-5 whitespace-nowrap text-right text-sm font-display font-black italic cursor-pointer hover:underline ${stats.totalOutstanding > 0 ? 'text-rose-600 hover:text-rose-800' : 'text-slate-300'}`}
+                    onClick={e => { e.stopPropagation(); navigate('/reports/accounts', { state: { selectedId: customer.id } }); }}
+                    title="View party ledger"
+                  >
+                    {stats.totalOutstanding !== 0 ? Math.abs(stats.totalOutstanding).toLocaleString() : '-'}
                   </td>
                   
-                  <td className="px-6 py-5 whitespace-nowrap text-center">
-                    <div className={`h-2 w-2 rounded-full mx-auto ${customer.status === 'ACTIVE' ? 'bg-emerald-500' : 'bg-slate-300'}`}></div>
+                  <td className="px-6 py-5 whitespace-nowrap text-center" onClick={e => handleToggleStatus(e, customer)}>
+                    <div className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full cursor-pointer transition-all hover:scale-105 ${
+                      customer.status === 'ACTIVE'
+                        ? 'bg-emerald-50 border border-emerald-200 hover:bg-emerald-100'
+                        : 'bg-slate-100 border border-slate-200 hover:bg-slate-200'
+                    }`} title={`Click to set ${customer.status === 'ACTIVE' ? 'Inactive' : 'Active'}`}>
+                      <div className={`h-2 w-2 rounded-full ${customer.status === 'ACTIVE' ? 'bg-emerald-500' : 'bg-slate-400'}`}></div>
+                      <span className={`text-[8px] font-black uppercase tracking-wider ${customer.status === 'ACTIVE' ? 'text-emerald-600' : 'text-slate-400'}`}>
+                        {customer.status === 'ACTIVE' ? 'Active' : 'Inactive'}
+                      </span>
+                    </div>
                   </td>
                   
                   <td className="px-6 py-5 whitespace-nowrap text-right" onClick={(e) => e.stopPropagation()}>
@@ -544,26 +641,25 @@ const CustomerList: React.FC<CustomerListProps> = ({ customers, setCustomers, in
                 <td className="px-6 py-4 text-xs font-black uppercase tracking-widest text-slate-400">Section Totals</td>
                 
                 {(activeView === 'ALL' || activeView === 'ROYALTY') && (
-                   <td className="px-6 py-4 text-right text-sm font-display font-black text-purple-400">₹{totals.royalty.toLocaleString()}</td>
+                   <td className="px-6 py-4 text-right text-sm font-display font-black text-purple-400">{totals.royalty.toLocaleString()}</td>
                 )}
 
                 {(activeView === 'ALL' || activeView === 'INTEREST') && (
                    <>
-                      <td className="px-6 py-4 text-right text-sm font-display font-black text-emerald-400">₹{totals.principalLent.toLocaleString()}</td>
-                      <td className="px-6 py-4"></td>
-                      <td className="px-6 py-4 text-right text-sm font-display font-black text-emerald-400">₹{totals.interestYield.toLocaleString()}</td>
+                      <td className="px-6 py-4 text-right text-sm font-display font-black text-emerald-400">{totals.principalLent.toLocaleString()}</td>
+                      <td className="px-6 py-4 text-right text-sm font-display font-black text-rose-400">{totals.creditors.toLocaleString()}</td>
+                      <td className="px-6 py-4 text-right text-sm font-display font-black text-slate-300">{totals.general !== 0 ? (totals.general < 0 ? '−' : '') + Math.abs(totals.general).toLocaleString() : '-'}</td>
                    </>
                 )}
 
                 {(activeView === 'CREDITOR') && (
                    <>
-                      <td className="px-6 py-4 text-right text-sm font-display font-black text-rose-400">₹{totals.principalBorrowed.toLocaleString()}</td>
-                      <td className="px-6 py-4"></td>
-                      <td className="px-6 py-4 text-right text-sm font-display font-black text-rose-400">₹{totals.interestPayable.toLocaleString()}</td>
+                      <td className="px-6 py-4 text-right text-sm font-display font-black text-rose-400">{totals.creditors.toLocaleString()}</td>
+                      <td className="px-6 py-4 text-right text-sm font-display font-black text-slate-300">{totals.general !== 0 ? (totals.general < 0 ? '−' : '') + Math.abs(totals.general).toLocaleString() : '-'}</td>
                    </>
                 )}
 
-                <td className="px-6 py-4 text-right text-sm font-display font-black text-rose-400">₹{totals.outstanding.toLocaleString()}</td>
+                <td className="px-6 py-4 text-right text-sm font-display font-black text-rose-400">{totals.outstanding.toLocaleString()}</td>
                 <td></td>
                 <td></td>
              </tr>
@@ -670,7 +766,7 @@ const CustomerList: React.FC<CustomerListProps> = ({ customers, setCustomers, in
 
                    {formData.isRoyalty && (
                      <div className="bg-purple-50 p-4 rounded-xl border border-purple-100">
-                       <label className="block text-[10px] font-black text-purple-400 uppercase tracking-widest mb-2">Royalty Amount (₹)</label>
+                       <label className="block text-[10px] font-black text-purple-400 uppercase tracking-widest mb-2">Royalty Amount ()</label>
                        <input type="number" className="w-full bg-white rounded-lg p-2 font-black text-purple-900 outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" placeholder="Enter amount" value={formData.royaltyAmount && formData.royaltyAmount !== 0 ? formData.royaltyAmount : ''} onChange={e => setFormData({...formData, royaltyAmount: Number(e.target.value) || 0})} onKeyDown={handleKeyDown} />
                      </div>
                    )}
@@ -731,3 +827,4 @@ const CustomerList: React.FC<CustomerListProps> = ({ customers, setCustomers, in
 };
 
 export default CustomerList;
+

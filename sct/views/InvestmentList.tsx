@@ -1,17 +1,19 @@
 
 import React, { useState, useMemo } from 'react';
-import { Investment, InvestmentTransaction, Payment, PaymentMode } from '../types';
+import { Investment, InvestmentTransaction, Payment, PaymentMode, StaffUser } from '../types';
 import { investmentAPI, paymentAPI } from '../services/api';
+import { canStaffEditRecord, canStaffDeleteRecord } from '../utils/authHelpers';
 
 interface InvestmentListProps {
   investments: Investment[];
   setInvestments: React.Dispatch<React.SetStateAction<Investment[]>>;
   savingCategories: string[];
-  payments?: Payment[]; // Optional to support existing calls, but utilized here
+  payments?: Payment[];
   setPayments?: React.Dispatch<React.SetStateAction<Payment[]>>;
+  currentUser?: StaffUser | null;
 }
 
-const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestments, savingCategories, payments, setPayments }) => {
+const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestments, savingCategories, payments, setPayments, currentUser }) => {
   const [showForm, setShowForm] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -30,12 +32,16 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
   const [showPremiumEntry, setShowPremiumEntry] = useState<boolean>(false); // For LIC/SIP/Gold
   const [deletingLedgerMonth, setDeletingLedgerMonth] = useState<number | null>(null);
 
-  const [ledgerForm, setLedgerForm] = useState<{ amountPaid: number; dividend: number; date: number; paymentMode: PaymentMode }>({ 
+  const [ledgerForm, setLedgerForm] = useState<{ amountPaid: number; dividend: number; date: number; paymentMode: PaymentMode; remarks: string }>({ 
     amountPaid: 0, 
     dividend: 0, 
     date: Date.now(),
-    paymentMode: 'CASH'
+    paymentMode: 'CASH',
+    remarks: ''
   });
+
+  // Start Date edit state (for chit ledger)
+  const [updatingStartDate, setUpdatingStartDate] = useState(false);
 
   // Prize Declaration State
   const [showPrizeModal, setShowPrizeModal] = useState(false);
@@ -66,14 +72,17 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
   };
 
   const filteredInvestments = useMemo(() => {
-    if (filterType === 'ALL') return investments;
-    return investments.filter(inv => inv.type === filterType);
+    const list = investments ?? [];
+    if (filterType === 'ALL') return list;
+    const normalize = (s: string) => (s ?? '').toUpperCase().replace(/\s/g, '_').trim();
+    const target = normalize(filterType);
+    return list.filter(inv => normalize(inv?.type ?? '') === target);
   }, [investments, filterType]);
 
   const totals = useMemo(() => {
     return filteredInvestments.reduce((acc, inv) => {
       const approx = calculateApproxInvested(inv);
-      return { totalInvested: acc.totalInvested + approx, expectedCorpus: acc.expectedCorpus + (inv.expectedMaturityValue || 0) };
+      return { totalInvested: acc.totalInvested + approx, expectedCorpus: acc.expectedCorpus + (inv.expectedMaturityValue || inv.chitConfig?.chitValue || 0) };
     }, { totalInvested: 0, expectedCorpus: 0 });
   }, [filteredInvestments]);
 
@@ -122,6 +131,19 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
     }
   };
 
+  const handleDeleteInvestment = async (e: React.MouseEvent, inv: Investment) => {
+    e.stopPropagation();
+    if (!window.confirm(`Delete investment "${inv.name}"? This cannot be undone.`)) return;
+    try {
+      await investmentAPI.delete(inv.id);
+      setInvestments(prev => prev.filter(i => i.id !== inv.id));
+      if (viewDetail?.id === inv.id) setViewDetail(null);
+    } catch (err) {
+      console.error('Failed to delete investment', err);
+      alert('Failed to delete investment. Please try again.');
+    }
+  };
+
   // --- LEDGER SAVING LOGIC (Common for Chit & Regular) ---
   const handleLedgerSave = async () => {
      if (!viewDetail || isSubmitting) return;
@@ -144,7 +166,8 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
         month: monthNum,
         amountPaid: ledgerForm.amountPaid,
         dividend: ledgerForm.dividend,
-        totalPayable: ledgerForm.amountPaid + ledgerForm.dividend
+        totalPayable: ledgerForm.amountPaid + ledgerForm.dividend,
+        notes: ledgerForm.remarks?.trim() || undefined
      };
 
      try {
@@ -170,7 +193,7 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
               sourceId: viewDetail.id,
               sourceName: viewDetail.name,
               category: `INVESTMENT_${viewDetail.type}`,
-              notes: `${viewDetail.type} Payment - Month ${monthNum}`
+              notes: ledgerForm.remarks?.trim() ? `${viewDetail.type} Payment - Month ${monthNum} · ${ledgerForm.remarks.trim()}` : `${viewDetail.type} Payment - Month ${monthNum}`
            };
            try {
               const savedPayment = await paymentAPI.create(newPayment);
@@ -184,7 +207,7 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
 
         setShowLedgerEntry(null);
         setShowPremiumEntry(false);
-        setLedgerForm({ amountPaid: 0, dividend: 0, date: Date.now(), paymentMode: 'CASH' });
+        setLedgerForm({ amountPaid: 0, dividend: 0, date: Date.now(), paymentMode: 'CASH', remarks: '' });
      } catch (error) {
         console.error('Failed to save ledger entry:', error);
         alert('Failed to save ledger entry. Please try again.');
@@ -235,7 +258,7 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
                sourceId: viewDetail.id,
                sourceName: viewDetail.name,
                category: 'CHIT_SAVINGS',
-               notes: `Prize Money Received - Month ${prizeForm.month} (Bid: ₹${prizeForm.bidAmount})`
+               notes: `Prize Money Received - Month ${prizeForm.month} (Bid: ${prizeForm.bidAmount})`
            };
            try {
               const savedPayment = await paymentAPI.create(receiptVoucher);
@@ -249,12 +272,38 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
        setInvestments(prev => prev.map(inv => inv.id === viewDetail.id ? updatedInv : inv));
        setViewDetail(updatedInv);
        setShowPrizeModal(false);
-       alert(`Prize Declared! ₹${prizeForm.amount.toLocaleString()} receipt voucher created.`);
+       alert(`Prize Declared! ${prizeForm.amount.toLocaleString()} receipt voucher created.`);
     } catch (error) {
        console.error('Failed to declare prize:', error);
        alert('Failed to declare prize. Please try again.');
     } finally {
        setIsSubmitting(false);
+    }
+  };
+
+  const handleClearWon = async () => {
+    if (!viewDetail || !viewDetail.chitConfig?.isPrized || isSubmitting) return;
+    if (!window.confirm(`Remove "Won" status from ${viewDetail.name}? This will clear the prize declaration.`)) return;
+    setIsSubmitting(true);
+    try {
+      const updatedInv: Investment = {
+        ...viewDetail,
+        chitConfig: {
+          ...viewDetail.chitConfig,
+          isPrized: false,
+          prizeAmount: 0,
+          prizeMonth: 0
+        }
+      };
+      await investmentAPI.update(viewDetail.id, updatedInv);
+      setInvestments(prev => prev.map(inv => inv.id === viewDetail.id ? updatedInv : inv));
+      setViewDetail(updatedInv);
+      alert('Won status removed.');
+    } catch (error) {
+      console.error('Failed to clear won status:', error);
+      alert('Failed to remove won status. Please try again.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -303,7 +352,44 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
     }
   };
 
+  const handleUpdateChitStartDate = async (newStartDate: number) => {
+    if (!viewDetail || viewDetail.type !== 'CHIT_SAVINGS' || !viewDetail.chitConfig || updatingStartDate) return;
+    setUpdatingStartDate(true);
+    try {
+      const dur = viewDetail.chitConfig.durationMonths || 20;
+      const endDate = new Date(newStartDate);
+      endDate.setMonth(endDate.getMonth() + dur);
+      const updated = {
+        ...viewDetail,
+        startDate: newStartDate,
+        maturityDate: endDate.getTime()
+      };
+      await investmentAPI.update(viewDetail.id, updated);
+      setInvestments(prev => prev.map(inv => inv.id === viewDetail.id ? updated : inv));
+      setViewDetail(updated);
+    } catch (e) {
+      console.error('Failed to update start date:', e);
+      alert('Failed to update start date. Please try again.');
+    } finally {
+      setUpdatingStartDate(false);
+    }
+  };
+
   const formatDate = (ts: number) => new Date(ts).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+  
+  // Compute due date for a chit month (startDate + monthNum-1 months)
+  const getChitMonthDueDate = (startDate: number, monthNum: number): number => {
+    const d = new Date(startDate);
+    d.setMonth(d.getMonth() + (monthNum - 1));
+    return d.getTime();
+  };
+
+  // Safe timestamp to YYYY-MM-DD for date inputs; avoids RangeError when date is invalid
+  const toDateInputValue = (ts: number | undefined | null): string => {
+    if (ts == null || !Number.isFinite(ts)) return new Date().toISOString().slice(0, 10);
+    const d = new Date(ts);
+    return isNaN(d.getTime()) ? new Date().toISOString().slice(0, 10) : d.toISOString().slice(0, 10);
+  };
 
   return (
     <div className="space-y-8 animate-fadeIn">
@@ -346,19 +432,21 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
 
       {/* FILTER BAR */}
       <div className="flex bg-slate-100 p-1.5 rounded-2xl gap-2 overflow-x-auto">
-          <button 
-             onClick={() => setFilterType('ALL')} 
+          <button
+             type="button"
+             onClick={() => setFilterType('ALL')}
              className={`px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest whitespace-nowrap transition-all ${filterType === 'ALL' ? 'bg-white shadow text-slate-800' : 'text-slate-400 hover:text-slate-600'}`}
           >
              All Assets
           </button>
-          {savingCategories.map(cat => (
-             <button 
+          {(savingCategories ?? []).map(cat => (
+             <button
                 key={cat}
-                onClick={() => setFilterType(cat)} 
+                type="button"
+                onClick={() => setFilterType(cat)}
                 className={`px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest whitespace-nowrap transition-all ${filterType === cat ? 'bg-white shadow text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
              >
-                {cat.replace('_', ' ')}
+                {cat.replace(/_/g, ' ')}
              </button>
           ))}
       </div>
@@ -367,11 +455,11 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="bg-white p-8 rounded-[2rem] border border-blue-100 shadow-sm flex flex-col justify-center">
            <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Total Capital Deployed (Filtered)</div>
-           <div className="text-4xl font-display font-black text-slate-900 italic tracking-tighter">₹{totals.totalInvested.toLocaleString()}</div>
+           <div className="text-4xl font-display font-black text-slate-900 italic tracking-tighter">{totals.totalInvested.toLocaleString()}</div>
         </div>
         <div className="bg-white p-8 rounded-[2rem] border border-blue-100 shadow-sm flex flex-col justify-center">
            <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Projected Maturity Corpus</div>
-           <div className="text-4xl font-display font-black text-emerald-600 italic tracking-tighter">₹{totals.expectedCorpus.toLocaleString()}</div>
+           <div className="text-4xl font-display font-black text-emerald-600 italic tracking-tighter">{totals.expectedCorpus.toLocaleString()}</div>
         </div>
       </div>
 
@@ -416,16 +504,16 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
                 <div className="grid grid-cols-2 gap-3">
                   <div className="bg-slate-50 rounded-xl p-3">
                     <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Chit Value</div>
-                    <div className="font-black text-slate-800 text-sm">{inv.chitConfig?.chitValue ? `₹${inv.chitConfig.chitValue.toLocaleString()}` : '—'}</div>
+                    <div className="font-black text-slate-800 text-sm">{(inv.chitConfig?.chitValue || inv.expectedMaturityValue) ? `${(inv.chitConfig?.chitValue || inv.expectedMaturityValue || 0).toLocaleString()}` : '—'}</div>
                   </div>
                   <div className="bg-slate-50 rounded-xl p-3">
                     <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Invested</div>
-                    <div className="font-black text-slate-900 text-sm">₹{approxInvested.toLocaleString()}</div>
+                    <div className="font-black text-slate-900 text-sm">{approxInvested.toLocaleString()}</div>
                   </div>
                   <div className="bg-slate-50 rounded-xl p-3">
                               <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Monthly Payable</div>
                               <div className="font-black text-xs text-slate-700">
-                                 {isChit && inv.chitConfig?.monthlyInstallment ? `₹${inv.chitConfig.monthlyInstallment.toLocaleString()}` : '—'}
+                                 {isChit ? (inv.chitConfig?.monthlyInstallment ? `${inv.chitConfig.monthlyInstallment.toLocaleString()}` : '—') : (inv.monthlyPayable ? `${inv.monthlyPayable.toLocaleString()}` : '—')}
                               </div>
                   </div>
                   <div className="bg-slate-50 rounded-xl p-3">
@@ -435,11 +523,21 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
                     </div>
                   </div>
                 </div>
-                <div className="flex justify-end pt-1">
-                  <button onClick={(e) => { e.stopPropagation(); setFormData(inv); setEditingId(inv.id); setShowForm(true); }}
-                    className="h-8 w-8 rounded-full bg-slate-100 text-slate-400 hover:bg-blue-600 hover:text-white transition flex items-center justify-center">
-                    <i className="fas fa-pen text-[9px]"></i>
-                  </button>
+                <div className="flex justify-end gap-2 pt-1">
+                  {canStaffEditRecord(currentUser, inv) && (
+                    <button onClick={(e) => { e.stopPropagation(); setFormData(inv); setEditingId(inv.id); setShowForm(true); }}
+                      className="h-8 w-8 rounded-full bg-slate-100 text-slate-400 hover:bg-blue-600 hover:text-white transition flex items-center justify-center"
+                      title="Edit">
+                      <i className="fas fa-pen text-[9px]"></i>
+                    </button>
+                  )}
+                  {canStaffDeleteRecord(currentUser, inv) && (
+                    <button onClick={(e) => handleDeleteInvestment(e, inv)}
+                      className="h-8 w-8 rounded-full bg-slate-100 text-slate-400 hover:bg-rose-500 hover:text-white transition flex items-center justify-center"
+                      title="Delete">
+                      <i className="fas fa-trash-alt text-[9px]"></i>
+                    </button>
+                  )}
                 </div>
               </div>
             );
@@ -461,7 +559,7 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
               <th className="px-4 py-4 text-left text-[9px] font-black text-slate-400 uppercase tracking-widest">End Date</th>
               <th className="px-4 py-4 text-right text-[9px] font-black text-slate-400 uppercase tracking-widest">Invested</th>
               <th className="px-4 py-4 text-left text-[9px] font-black text-slate-400 uppercase tracking-widest">Progress</th>
-              <th className="px-4 py-4 text-center text-[9px] font-black text-slate-400 uppercase tracking-widest">Edit</th>
+              <th className="px-4 py-4 text-center text-[9px] font-black text-slate-400 uppercase tracking-widest">Actions</th>
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-slate-50">
@@ -522,24 +620,36 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
                     </span>
                   </td>
                   <td className="px-4 py-4 text-right font-black text-slate-700">
-                    {inv.chitConfig?.chitValue ? `₹${inv.chitConfig.chitValue.toLocaleString()}` : '—'}
+                    {(inv.chitConfig?.chitValue || inv.expectedMaturityValue) ? `${(inv.chitConfig?.chitValue || inv.expectedMaturityValue || 0).toLocaleString()}` : '—'}
                   </td>
                   <td className="px-4 py-4 whitespace-nowrap">
-                              {isChit && inv.chitConfig?.monthlyInstallment ? `₹${inv.chitConfig.monthlyInstallment.toLocaleString()}` : '—'}
+                              {isChit ? (inv.chitConfig?.monthlyInstallment ? `${inv.chitConfig.monthlyInstallment.toLocaleString()}` : '—') : (inv.monthlyPayable ? `${inv.monthlyPayable.toLocaleString()}` : '—')}
                   </td>
                   <td className="px-4 py-4 text-xs font-bold text-slate-500 whitespace-nowrap">{fmtDate(startDate)}</td>
                   <td className="px-4 py-4 text-xs font-bold text-slate-500 whitespace-nowrap">{fmtDate(endDate)}</td>
-                  <td className="px-4 py-4 text-right font-black text-slate-900 whitespace-nowrap">₹{approxInvested.toLocaleString()}</td>
+                  <td className="px-4 py-4 text-right font-black text-slate-900 whitespace-nowrap">{approxInvested.toLocaleString()}</td>
                   <td className="px-4 py-4">
                     <span className="text-xs font-black text-slate-700">
                       {isChit ? `${paidMonths}/${durationMonths}` : `${Math.round(progress)}%`}
                     </span>
                   </td>
-                  <td className="px-4 py-4 text-center">
-                    <button onClick={(e) => { e.stopPropagation(); setFormData(inv); setEditingId(inv.id); setShowForm(true); }}
-                      className="h-7 w-7 rounded-full bg-slate-100 text-slate-400 hover:bg-blue-600 hover:text-white transition flex items-center justify-center mx-auto">
-                      <i className="fas fa-pen text-[9px]"></i>
-                    </button>
+                  <td className="px-4 py-4">
+                    <div className="flex items-center justify-center gap-2">
+                      {canStaffEditRecord(currentUser, inv) && (
+                        <button onClick={(e) => { e.stopPropagation(); setFormData(inv); setEditingId(inv.id); setShowForm(true); }}
+                          className="h-7 w-7 rounded-full bg-slate-100 text-slate-400 hover:bg-blue-600 hover:text-white transition flex items-center justify-center"
+                          title="Edit">
+                          <i className="fas fa-pen text-[9px]"></i>
+                        </button>
+                      )}
+                      {canStaffDeleteRecord(currentUser, inv) && (
+                        <button onClick={(e) => handleDeleteInvestment(e, inv)}
+                          className="h-7 w-7 rounded-full bg-slate-100 text-slate-400 hover:bg-rose-500 hover:text-white transition flex items-center justify-center"
+                          title="Delete">
+                          <i className="fas fa-trash-alt text-[9px]"></i>
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               );
@@ -554,17 +664,17 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
               </td>
               {/* Col 4: Chit Value total */}
               <td className="px-4 py-4 text-right font-mono font-black text-amber-300 text-xs whitespace-nowrap">
-                ₹{filteredInvestments.reduce((s, inv) => s + (inv.chitConfig?.chitValue || 0), 0).toLocaleString()}
+                {filteredInvestments.reduce((s, inv) => s + (inv.chitConfig?.chitValue || inv.expectedMaturityValue || 0), 0).toLocaleString()}
               </td>
               {/* Col 5: Monthly Payable total */}
               <td className="px-4 py-4 text-left font-mono font-black text-amber-300 text-xs whitespace-nowrap">
-                ₹{filteredInvestments.reduce((s, inv) => s + (inv.chitConfig?.monthlyInstallment || 0), 0).toLocaleString()}
+                {filteredInvestments.reduce((s, inv) => s + (inv.chitConfig?.monthlyInstallment ?? inv.monthlyPayable ?? 0), 0).toLocaleString()}
               </td>
               {/* Col 6-7: dates — blank */}
               <td colSpan={2}></td>
               {/* Col 8: Total Invested */}
               <td className="px-4 py-4 text-right font-mono font-black text-white text-sm whitespace-nowrap">
-                ₹{filteredInvestments.reduce((s, inv) => s + calculateApproxInvested(inv), 0).toLocaleString()}
+                {filteredInvestments.reduce((s, inv) => s + calculateApproxInvested(inv), 0).toLocaleString()}
               </td>
               {/* Col 9: Avg Month Count */}
               <td className="px-4 py-4 text-left whitespace-nowrap">
@@ -595,7 +705,12 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
                   <div>
                      <div className="flex gap-3 items-center mb-2">
                         <span className={`text-white px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${viewDetail.type === 'CHIT_SAVINGS' ? 'bg-yellow-500 text-blue-900' : 'bg-blue-600'}`}>{viewDetail.type.replace('_', ' ')}</span>
-                        {viewDetail.chitConfig?.isPrized && <span className="bg-blue-600 text-white px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest shadow-lg">Prized (Won)</span>}
+                        {viewDetail.chitConfig?.isPrized && (
+                           <span className="flex items-center gap-2">
+                              <span className="bg-blue-600 text-white px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest shadow-lg">Prized (Won)</span>
+                              <button onClick={handleClearWon} disabled={isSubmitting} className="text-rose-500 hover:text-rose-700 text-[9px] font-black uppercase tracking-wider underline disabled:opacity-50" title="Remove incorrectly marked won status">Remove Won</button>
+                           </span>
+                        )}
                      </div>
                      <h2 className="text-3xl font-display font-black text-slate-900 uppercase italic tracking-tighter">{viewDetail.name}</h2>
                      <p className="text-sm font-bold text-slate-500 mt-1">{viewDetail.provider}</p>
@@ -612,15 +727,15 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                            <div className="p-5 bg-yellow-50 rounded-2xl border border-yellow-100">
                               <div className="text-[9px] font-black text-yellow-600 uppercase tracking-widest mb-1">Chit Value</div>
-                              <div className="text-xl font-black text-yellow-900">₹{viewDetail.chitConfig.chitValue.toLocaleString()}</div>
+                              <div className="text-xl font-black text-yellow-900">{viewDetail.chitConfig.chitValue.toLocaleString()}</div>
                            </div>
                            <div className="p-5 bg-slate-50 rounded-2xl border border-slate-100">
                               <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Paid</div>
-                              <div className="text-xl font-black text-slate-900">₹{(viewDetail.transactions?.reduce((s,t)=>s+t.amountPaid,0) || 0).toLocaleString()}</div>
+                              <div className="text-xl font-black text-slate-900">{(viewDetail.transactions?.reduce((s,t)=>s+t.amountPaid,0) || 0).toLocaleString()}</div>
                            </div>
                            <div className="p-5 bg-emerald-50 rounded-2xl border border-emerald-100">
                               <div className="text-[9px] font-black text-emerald-500 uppercase tracking-widest mb-1">Dividend Saving</div>
-                              <div className="text-xl font-black text-emerald-700">₹{(viewDetail.transactions?.reduce((s,t)=>s+t.dividend,0) || 0).toLocaleString()}</div>
+                              <div className="text-xl font-black text-emerald-700">{(viewDetail.transactions?.reduce((s,t)=>s+t.dividend,0) || 0).toLocaleString()}</div>
                            </div>
                            <div className="p-5 bg-slate-50 rounded-2xl border border-slate-100">
                               <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Pending Months</div>
@@ -639,7 +754,7 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
                                     </div>
                                     <div className="text-right">
                                        <div className="text-[10px] font-black text-emerald-400 uppercase tracking-widest">Prize Received</div>
-                                       <div className="text-3xl font-display font-black text-white tracking-tighter">₹{viewDetail.chitConfig.prizeAmount?.toLocaleString()}</div>
+                                       <div className="text-3xl font-display font-black text-white tracking-tighter">{viewDetail.chitConfig.prizeAmount?.toLocaleString()}</div>
                                     </div>
                                  </div>
                                  
@@ -654,12 +769,12 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
                                        <div className="grid grid-cols-3 gap-8">
                                           <div>
                                              <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Cash Outflow</div>
-                                             <div className="text-xl font-black text-rose-400">₹{totalPaid.toLocaleString()}</div>
+                                             <div className="text-xl font-black text-rose-400">{totalPaid.toLocaleString()}</div>
                                           </div>
                                           <div>
                                              <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Net Realized Profit</div>
                                              <div className={`text-2xl font-black ${isProfit ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                                {isProfit ? '+' : ''}₹{netProfit.toLocaleString()}
+                                                {isProfit ? '+' : ''}{netProfit.toLocaleString()}
                                              </div>
                                           </div>
                                           <div>
@@ -689,12 +804,30 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
 
                         {/* LEDGER TABLE */}
                         <div>
-                           <h4 className="text-sm font-black text-slate-900 uppercase tracking-widest mb-4 border-b border-slate-100 pb-2">Full Ledger</h4>
+                           <div className="flex flex-wrap items-center justify-between gap-4 mb-4 border-b border-slate-100 pb-4">
+                              <h4 className="text-sm font-black text-slate-900 uppercase tracking-widest">Full Ledger</h4>
+                              <div className="flex items-center gap-3">
+                                 <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Starting Date</label>
+                                 <input
+                                    type="date"
+                                    className="border-2 border-slate-100 rounded-xl px-4 py-2 text-xs font-bold text-slate-800 outline-none focus:border-yellow-500 bg-white"
+                                    value={toDateInputValue(viewDetail.startDate)}
+                                    onChange={e => {
+                                      const val = e.target.value;
+                                      const ts = val ? new Date(val).getTime() : Date.now();
+                                      if (Number.isFinite(ts)) handleUpdateChitStartDate(ts);
+                                    }}
+                                    disabled={updatingStartDate}
+                                 />
+                                 {updatingStartDate && <i className="fas fa-spinner fa-spin text-yellow-500 text-sm"></i>}
+                              </div>
+                           </div>
                            <div className="overflow-hidden rounded-2xl border border-slate-100">
                               <table className="min-w-full divide-y divide-slate-100">
                                  <thead className="bg-slate-50">
                                     <tr>
                                        <th className="px-6 py-4 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Month</th>
+                                       <th className="px-6 py-4 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Date</th>
                                        <th className="px-6 py-4 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Payable</th>
                                        <th className="px-6 py-4 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Dividend</th>
                                        <th className="px-6 py-4 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Paid</th>
@@ -707,22 +840,28 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
                                        const monthNum = i + 1;
                                        const txn = viewDetail.transactions?.find(t => t.month === monthNum);
                                        const isPaid = !!txn;
+                                       const dueDate = getChitMonthDueDate(viewDetail.startDate, monthNum);
                                        
                                        return (
                                           <tr key={i} className="hover:bg-slate-50 transition">
                                              <td className="px-6 py-4 text-xs font-bold text-slate-600">Month {monthNum}</td>
-                                             <td className="px-6 py-4 text-right text-xs font-bold text-slate-400">₹{viewDetail.chitConfig?.monthlyInstallment.toLocaleString()}</td>
-                                             <td className="px-6 py-4 text-right text-xs font-bold text-emerald-600">{txn ? `₹${txn.dividend.toLocaleString()}` : '-'}</td>
-                                             <td className="px-6 py-4 text-right text-xs font-black text-slate-900">{txn ? `₹${txn.amountPaid.toLocaleString()}` : '-'}</td>
+                                             <td className="px-6 py-4 text-xs font-mono text-slate-600">
+                                                {txn
+                                                  ? <span title="Payment date">{formatDate(txn.date)}</span>
+                                                  : <span className="text-slate-400" title="Due date">{formatDate(dueDate)}</span>}
+                                             </td>
+                                             <td className="px-6 py-4 text-right text-xs font-bold text-slate-400">{viewDetail.chitConfig?.monthlyInstallment.toLocaleString()}</td>
+                                             <td className="px-6 py-4 text-right text-xs font-bold text-emerald-600">{txn ? `${txn.dividend.toLocaleString()}` : '-'}</td>
+                                             <td className="px-6 py-4 text-right text-xs font-black text-slate-900">{txn ? `${txn.amountPaid.toLocaleString()}` : '-'}</td>
                                              <td className="px-6 py-4 text-center">
                                                 {isPaid ? (
                                                    <span className="bg-emerald-100 text-emerald-700 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest">Paid</span>
                                                 ) : (
-                                                   <button onClick={() => setShowLedgerEntry({ month: monthNum, invId: viewDetail.id })} className="bg-blue-600 text-white px-3 py-1 rounded text-[9px] font-black uppercase tracking-widest hover:bg-yellow-500 hover:text-blue-900 transition">Pay Now</button>
+                                                   <button onClick={() => { setLedgerForm({ amountPaid: 0, dividend: 0, date: Date.now(), paymentMode: 'CASH', remarks: '' }); setShowLedgerEntry({ month: monthNum, invId: viewDetail.id }); }} className="bg-blue-600 text-white px-3 py-1 rounded text-[9px] font-black uppercase tracking-widest hover:bg-yellow-500 hover:text-blue-900 transition">Pay Now</button>
                                                 )}
                                              </td>
                                              <td className="px-6 py-4 text-center">
-                                                {isPaid && (
+                                                {isPaid && canStaffDeleteRecord(currentUser, txn) && (
                                                    <button
                                                       onClick={() => handleDeleteLedgerEntry(monthNum)}
                                                       disabled={deletingLedgerMonth === monthNum}
@@ -758,27 +897,42 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
                         <div className="grid grid-cols-2 gap-12">
                            <div>
                               <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Value Paid</div>
-                              <div className="text-4xl font-display font-black text-slate-900 tracking-tighter">₹{calculateApproxInvested(viewDetail).toLocaleString()}</div>
+                              <div className="text-4xl font-display font-black text-slate-900 tracking-tighter">{calculateApproxInvested(viewDetail).toLocaleString()}</div>
                               <div className="text-[10px] font-bold text-slate-400 mt-1">Based on {viewDetail.contributionType === 'MONTHLY' ? 'Monthly Ledger' : 'Lump Sum'}</div>
                            </div>
                            <div>
                               <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Maturity Value</div>
-                              <div className="text-4xl font-display font-black text-emerald-600 tracking-tighter">₹{(viewDetail.expectedMaturityValue || 0).toLocaleString()}</div>
+                              <div className="text-4xl font-display font-black text-emerald-600 tracking-tighter">{(viewDetail.expectedMaturityValue || 0).toLocaleString()}</div>
                            </div>
                         </div>
-                        {viewDetail.remarks && (
-                           <div className="bg-amber-50 p-6 rounded-2xl border border-amber-100">
-                              <div className="text-[10px] font-black text-amber-500 uppercase tracking-widest mb-2">Notes</div>
-                              <p className="text-sm font-bold text-amber-900">{viewDetail.remarks}</p>
-                           </div>
-                        )}
+                        <div className="bg-amber-50 p-6 rounded-2xl border border-amber-100">
+                           <div className="text-[10px] font-black text-amber-500 uppercase tracking-widest mb-2">Remarks / Notes</div>
+                           <textarea
+                              className="w-full min-h-[80px] p-4 rounded-xl border-2 border-amber-200 bg-white text-sm font-bold text-amber-900 outline-none focus:border-amber-500 resize-y"
+                              placeholder="Add remarks about this fund (optional)..."
+                              value={viewDetail.remarks || ''}
+                              onChange={e => setViewDetail(prev => prev ? { ...prev, remarks: e.target.value } : null)}
+                              onBlur={async (e) => {
+                                const val = (e.target as HTMLTextAreaElement).value.trim();
+                                if (!viewDetail) return;
+                                const prevRemarks = viewDetail.remarks || '';
+                                if (val === prevRemarks) return;
+                                try {
+                                  const updated = { ...viewDetail, remarks: val };
+                                  await investmentAPI.update(viewDetail.id, updated);
+                                  setViewDetail(updated);
+                                  setInvestments(prev => prev.map(i => i.id === viewDetail.id ? { ...i, remarks: val } : i));
+                                } catch (err) { console.error('Failed to save remarks', err); }
+                              }}
+                           />
+                        </div>
 
                         {/* --- MONTHLY LEDGER FOR NON-CHIT ITEMS (LIC, SIP, GOLD) --- */}
                         {viewDetail.contributionType === 'MONTHLY' && (
                            <div>
                               <div className="flex justify-between items-center mb-4 border-b border-slate-100 pb-2">
                                  <h4 className="text-sm font-black text-slate-900 uppercase tracking-widest">Premium / SIP Ledger</h4>
-                                 <button onClick={() => setShowPremiumEntry(true)} className="bg-blue-600 text-white px-4 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest hover:bg-blue-700 shadow-md">
+                                 <button onClick={() => { setLedgerForm({ amountPaid: 0, dividend: 0, date: Date.now(), paymentMode: 'CASH', remarks: '' }); setShowPremiumEntry(true); }} className="bg-blue-600 text-white px-4 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest hover:bg-blue-700 shadow-md">
                                     + Record Premium
                                  </button>
                               </div>
@@ -788,6 +942,7 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
                                        <tr>
                                           <th className="px-6 py-4 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">#</th>
                                           <th className="px-6 py-4 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Date</th>
+                                          <th className="px-6 py-4 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Remarks</th>
                                           <th className="px-6 py-4 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Amount Paid</th>
                                        </tr>
                                     </thead>
@@ -797,12 +952,13 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
                                              <tr key={txn.id} className="hover:bg-slate-50">
                                                 <td className="px-6 py-4 text-xs font-bold text-slate-600">{i + 1}</td>
                                                 <td className="px-6 py-4 text-xs font-bold text-slate-600">{formatDate(txn.date)}</td>
-                                                <td className="px-6 py-4 text-right text-xs font-black text-slate-900">₹{txn.amountPaid.toLocaleString()}</td>
+                                                <td className="px-6 py-4 text-xs font-bold text-slate-500">{txn.notes || '—'}</td>
+                                                <td className="px-6 py-4 text-right text-xs font-black text-slate-900">{txn.amountPaid.toLocaleString()}</td>
                                              </tr>
                                           ))
                                        ) : (
                                           <tr>
-                                             <td colSpan={3} className="px-6 py-8 text-center text-xs font-bold text-slate-400 italic">No payments recorded yet.</td>
+                                             <td colSpan={4} className="px-6 py-8 text-center text-xs font-bold text-slate-400 italic">No payments recorded yet.</td>
                                           </tr>
                                        )}
                                     </tbody>
@@ -864,7 +1020,21 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
 
                   <div>
                      <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Date</label>
-                     <input type="date" className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 font-bold text-slate-500 outline-none focus:border-blue-500" value={new Date(ledgerForm.date).toISOString().substr(0,10)} onChange={e => setLedgerForm({...ledgerForm, date: new Date(e.target.value).getTime()})} />
+                     <input type="date" className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 font-bold text-slate-500 outline-none focus:border-blue-500" value={toDateInputValue(ledgerForm.date)} onChange={e => {
+                        const val = e.target.value;
+                        const ts = val ? new Date(val).getTime() : Date.now();
+                        setLedgerForm({...ledgerForm, date: Number.isFinite(ts) ? ts : Date.now()});
+                      }} />
+                  </div>
+                  <div>
+                     <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Remarks</label>
+                     <input 
+                        type="text" 
+                        className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 font-bold text-slate-700 outline-none focus:border-blue-500" 
+                        placeholder="Optional notes"
+                        value={ledgerForm.remarks} 
+                        onChange={e => setLedgerForm({...ledgerForm, remarks: e.target.value})} 
+                     />
                   </div>
                   <button onClick={handleLedgerSave} disabled={isSubmitting} className="w-full py-3 bg-blue-600 text-white rounded-xl font-black uppercase tracking-widest hover:bg-blue-700 shadow-lg mt-2 disabled:opacity-50 disabled:cursor-not-allowed">{isSubmitting ? 'Saving...' : 'Save Voucher'}</button>
                   <button onClick={() => { setShowLedgerEntry(null); setShowPremiumEntry(false); }} className="w-full py-3 text-slate-400 font-black uppercase tracking-widest hover:text-slate-600">Cancel</button>
@@ -970,7 +1140,11 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
                        </div>
                        <div>
                           <label className="block text-[9px] font-black text-yellow-600 uppercase tracking-widest mb-1">Start Date</label>
-                          <input required type="date" className="w-full bg-white rounded-xl px-3 py-2 font-bold text-slate-900 outline-none border border-yellow-200 focus:border-yellow-500" value={new Date(formData.startDate || Date.now()).toISOString().substr(0,10)} onChange={e => setFormData({...formData, startDate: new Date(e.target.value).getTime()})} />
+                          <input required type="date" className="w-full bg-white rounded-xl px-3 py-2 font-bold text-slate-900 outline-none border border-yellow-200 focus:border-yellow-500" value={toDateInputValue(formData.startDate ?? Date.now())} onChange={e => {
+                         const val = e.target.value;
+                         const ts = val ? new Date(val).getTime() : Date.now();
+                         setFormData({...formData, startDate: Number.isFinite(ts) ? ts : Date.now()});
+                       }} />
                        </div>
                     </div>
                  </div>
@@ -987,22 +1161,34 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
                    <div className="grid grid-cols-2 gap-4">
                       <div>
                          <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Start Date</label>
-                         <input required type="date" className="w-full border-2 border-slate-100 rounded-xl px-4 py-3 text-sm font-bold bg-slate-50 outline-none focus:border-blue-500" value={new Date(formData.startDate || Date.now()).toISOString().substr(0,10)} onChange={e => setFormData({...formData, startDate: new Date(e.target.value).getTime()})} />
+                         <input required type="date" className="w-full border-2 border-slate-100 rounded-xl px-4 py-3 text-sm font-bold bg-slate-50 outline-none focus:border-blue-500" value={toDateInputValue(formData.startDate ?? Date.now())} onChange={e => {
+                         const val = e.target.value;
+                         const ts = val ? new Date(val).getTime() : Date.now();
+                         setFormData({...formData, startDate: Number.isFinite(ts) ? ts : Date.now()});
+                       }} />
                       </div>
                       <div>
                          <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Maturity Date</label>
-                         <input required type="date" className="w-full border-2 border-slate-100 rounded-xl px-4 py-3 text-sm font-bold bg-slate-50 outline-none focus:border-blue-500" value={new Date(formData.maturityDate || Date.now()).toISOString().substr(0,10)} onChange={e => setFormData({...formData, maturityDate: new Date(e.target.value).getTime()})} />
+                         <input required type="date" className="w-full border-2 border-slate-100 rounded-xl px-4 py-3 text-sm font-bold bg-slate-50 outline-none focus:border-blue-500" value={toDateInputValue(formData.maturityDate ?? Date.now())} onChange={e => {
+                         const val = e.target.value;
+                         const ts = val ? new Date(val).getTime() : Date.now();
+                         setFormData({...formData, maturityDate: Number.isFinite(ts) ? ts : Date.now()});
+                       }} />
                       </div>
                    </div>
                    
                    <div className="grid grid-cols-2 gap-4">
                       <div>
-                         <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Investment Amount (₹)</label>
+                         <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Investment Amount ()</label>
                          <input type="number" className="w-full border-2 border-slate-100 rounded-xl px-4 py-3 text-sm font-bold bg-slate-50 outline-none focus:border-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={formData.amountInvested || ''} onChange={e => setFormData({...formData, amountInvested: Number(e.target.value)})} />
                          {formData.contributionType === 'MONTHLY' && <p className="text-[9px] font-bold text-slate-400 mt-1">* This is the monthly installment amount</p>}
                       </div>
                       <div>
-                         <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Target Value (₹)</label>
+                         <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Monthly Payable ()</label>
+                         <input type="number" className="w-full border-2 border-slate-100 rounded-xl px-4 py-3 text-sm font-bold bg-slate-50 outline-none focus:border-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" placeholder="e.g. monthly interest / premium" value={formData.monthlyPayable ?? ''} onChange={e => setFormData({...formData, monthlyPayable: e.target.value === '' ? undefined : Number(e.target.value)})} />
+                      </div>
+                      <div>
+                         <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Target Value ()</label>
                          <input type="number" className="w-full border-2 border-slate-100 rounded-xl px-4 py-3 text-sm font-bold bg-slate-50 outline-none focus:border-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={formData.expectedMaturityValue || ''} onChange={e => setFormData({...formData, expectedMaturityValue: Number(e.target.value)})} />
                       </div>
                    </div>
@@ -1022,3 +1208,4 @@ const InvestmentList: React.FC<InvestmentListProps> = ({ investments, setInvestm
 };
 
 export default InvestmentList;
+
